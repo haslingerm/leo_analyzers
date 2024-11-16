@@ -11,7 +11,7 @@ namespace LeoAnalyzers;
 
 /*
  * Taken from https://github.com/meziantou/Meziantou.Analyzer/blob/main/src/Meziantou.Analyzer/Rules/PrimaryConstructorParameterShouldBeReadOnlyAnalyzer.cs
- * and modified under MIT License at 2024-11-16, all credit to the original author.
+ * under MIT License and modified at 2024-11-16, all credit to the original author.
  */
 
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
