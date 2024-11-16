@@ -10,7 +10,7 @@
         <IsRoslynComponent>true</IsRoslynComponent>
 
         <RootNamespace>LeoAnalyzers</RootNamespace>
-        <AssemblyName>LeoAnalyzers</AssemblyName>        
+        <AssemblyName>LeoAnalyzers</AssemblyName>
     </PropertyGroup>
 
     <ItemGroup>
@@ -18,16 +18,16 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0"/>
     </ItemGroup>
-    
+
     <PropertyGroup>
         <Title>HTL Leonding Code Analyzers</Title>
         <Description>Contains Roslyn analyzers to enforce solid and safe code design and conventions</Description>
         <PackageId>HTLLeonding.Utility.LeoAnalyzers</PackageId>
         <PackageReadmeFile>Readme.md</PackageReadmeFile>
         <PackageType>Dependency</PackageType>
-        <PackageVersion>1.0.0</PackageVersion>
+        <PackageVersion>1.0.1</PackageVersion>
         <Authors>M. Haslinger</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageTags>HTL-Leonding;roslyn;analyzer</PackageTags>
@@ -35,6 +35,11 @@
         <RepositoryType>git</RepositoryType>
         <RepositoryUrl>https://github.com/markushaslinger/leo_analyzers</RepositoryUrl>
     </PropertyGroup>
+
+    <ItemGroup>
+        <Analyzer Include="$(OutputPath)\LeoAnalyzers.dll"/>
+        <None Include="$(MSBuildThisFileDirectory)\bin\Release\netstandard2.0\LeoAnalyzers.dll" Pack="true" PackagePath="analyzers/dotnet/roslyn4.10/cs/"/>
+    </ItemGroup>
 
     <ItemGroup>
         <Content Include="AnalyzerReleases.Shipped.md">
