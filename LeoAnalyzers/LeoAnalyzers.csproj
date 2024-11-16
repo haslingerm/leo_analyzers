@@ -11,6 +11,8 @@
 
         <RootNamespace>LeoAnalyzers</RootNamespace>
         <AssemblyName>LeoAnalyzers</AssemblyName>
+        
+        <IncludeBuildOutput>true</IncludeBuildOutput>
     </PropertyGroup>
 
     <ItemGroup>
@@ -36,10 +38,12 @@
         <RepositoryUrl>https://github.com/markushaslinger/leo_analyzers</RepositoryUrl>
     </PropertyGroup>
 
-    <ItemGroup>
-        <Analyzer Include="$(OutputPath)\LeoAnalyzers.dll"/>
-        <None Include="$(MSBuildThisFileDirectory)\bin\Release\netstandard2.0\LeoAnalyzers.dll" Pack="true" PackagePath="analyzers/dotnet/roslyn4.10/cs/"/>
-    </ItemGroup>
+    <Target Name="AddAnalyzersToPackage" AfterTargets="Build" Condition="'$(IsPackable)' == 'True'">
+        <ItemGroup>
+            <Analyzer Include="$(OutputPath)\LeoAnalyzers.dll"/>
+            <None Include="$(MSBuildThisFileDirectory)\bin\Release\netstandard2.0\LeoAnalyzers.dll" Pack="true" PackagePath="analyzers/dotnet/roslyn4.10/cs/"/>
+        </ItemGroup>
+    </Target>
 
     <ItemGroup>
         <Content Include="AnalyzerReleases.Shipped.md">
