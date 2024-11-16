@@ -12,7 +12,9 @@
         <RootNamespace>LeoAnalyzers</RootNamespace>
         <AssemblyName>LeoAnalyzers</AssemblyName>
         
-        <IncludeBuildOutput>true</IncludeBuildOutput>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <PackageType>Analyzer</PackageType>
+        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
     </PropertyGroup>
 
     <ItemGroup>
@@ -20,7 +22,9 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0"/>
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0">
+            <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
     </ItemGroup>
 
     <PropertyGroup>
@@ -29,7 +33,7 @@
         <PackageId>HTLLeonding.Utility.LeoAnalyzers</PackageId>
         <PackageReadmeFile>Readme.md</PackageReadmeFile>
         <PackageType>Dependency</PackageType>
-        <PackageVersion>1.0.1</PackageVersion>
+        <PackageVersion>1.0.2</PackageVersion>
         <Authors>M. Haslinger</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageTags>HTL-Leonding;roslyn;analyzer</PackageTags>
