@@ -23,6 +23,9 @@ jobs:
           dotnet-version: 9.0.x
       - name: Create Package Directory
         run: mkdir nupkgs
+      - name: Build
+        run: dotnet build -c ${{env.BUILD_CONFIG}}
+        working-directory: ${{env.PROJ_DIR}}
       - name: Pack
         run: dotnet pack -c ${{env.BUILD_CONFIG}} --output ${{env.NUGET_DIR}}
         working-directory: ${{env.PROJ_DIR}}
