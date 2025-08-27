@@ -13,7 +13,7 @@ public sealed class EmptyIfOrElseClauseRequiresCommentAnalyzer : DiagnosticAnaly
     private const string Title = "Empty if/else clause";
     private const string Message = "Empty {0} clause must be removed or contain a comment";
     private static readonly DiagnosticDescriptor rule = new(
-        Rules.EmptyIfOrElseClauseMustBeCommented,
+        Rules.EmptyIfOrElseClauseRequiresComment,
         Title,
         Message,
         Rules.Categories.Design,
