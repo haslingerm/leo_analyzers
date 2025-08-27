@@ -8,7 +8,7 @@ namespace LeoAnalyzers.Tests
     public sealed class PrimaryConstructorParameterMustBeReadOnlyAnalyzerTests
     {
         [Fact]
-        public async Task ParameterReassignment_Simple()
+        public async ValueTask ParameterReassignment_Simple()
         {
             const string SrcText = """
                                    class Foo(int bar)
@@ -26,7 +26,7 @@ namespace LeoAnalyzers.Tests
                 TestCode = SrcText
             };
 
-            await context.RunAsync();
+            await context.RunAsync(TestContext.Current.CancellationToken);
         }
     }
 }
