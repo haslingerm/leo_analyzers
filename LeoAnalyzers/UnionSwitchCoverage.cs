@@ -182,6 +182,7 @@ internal static class UnionSwitchCoverage
         // union's synthesized constructor retains the actual member annotation.
         // User-defined constructors and imported metadata do not provide this
         // guarantee, so leave those cases to the compiler.
+        var foundMatch = false;
         if (unionType is INamedTypeSymbol named)
         {
             foreach (var constructor in named.InstanceConstructors)
@@ -189,12 +190,19 @@ internal static class UnionSwitchCoverage
                 if (constructor.IsImplicitlyDeclared && constructor.Parameters.Length == 1 &&
                     SymbolEqualityComparer.Default.Equals(constructor.Parameters[0].Type, caseType))
                 {
-                    return constructor.Parameters[0].NullableAnnotation == NullableAnnotation.NotAnnotated;
+                    // Substitution can make distinct cases compare equal, such
+                    // as T and string? in Result<string>. Every match must be
+                    // known non-nullable, regardless of constructor order.
+                    if (constructor.Parameters[0].NullableAnnotation != NullableAnnotation.NotAnnotated)
+                    {
+                        return false;
+                    }
+                    foundMatch = true;
                 }
             }
         }
 
-        return false;
+        return foundMatch;
     }
 
     private static bool IsNullConstant(ExpressionSyntax expression, SemanticModel model, CancellationToken cancellationToken)

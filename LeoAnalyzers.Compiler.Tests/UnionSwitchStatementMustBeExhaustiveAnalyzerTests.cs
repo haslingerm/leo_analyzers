@@ -93,6 +93,37 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzerTests
         await VerifyAsync(Source, 0);
     }
 
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData("T, string?", false, false, 1)]
+    [InlineData("string?, T", false, false, 1)]
+    [InlineData("T, string?", true, false, 0)]
+    [InlineData("string?, T", true, false, 0)]
+    [InlineData("T, string", false, true, 0)]
+    [InlineData("string, T", false, true, 0)]
+    public async ValueTask SubstitutedDuplicateCasesCheckEveryConstructor(string memberTypes, bool handlesNull,
+        bool expectedFastProof, int expectedCount)
+    {
+        var source = $$"""
+            #nullable enable
+            public union Result<T>({{memberTypes}}) where T : class;
+            class C
+            {
+                void M(Result<string> value)
+                {
+                    switch (value)
+                    {
+                        case string: break;
+                        {{(handlesNull ? "case null: break;" : "")}}
+                    }
+                }
+            }
+            """;
+        var compilation = CreateCompilation(source);
+        Assert.Empty(compilation.GetDiagnostics(TestContext.Current.CancellationToken).Where(d => d.Severity == DiagnosticSeverity.Error));
+        Assert.Equal(expectedFastProof, HasFastProof(compilation));
+        await VerifyAsync(source, expectedCount);
+    }
+
     [Fact(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
     public async ValueTask UnknownReferenceNullabilityKeepsTheCompilerCheck()
     {
