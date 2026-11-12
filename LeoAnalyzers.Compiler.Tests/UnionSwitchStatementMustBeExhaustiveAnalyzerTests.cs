@@ -579,6 +579,141 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzerTests
         Assert.Empty(diagnostics);
     }
 
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public async ValueTask LoopCarriedNullStateIncludesSwitchBody(bool handlesNull, int expectedCount)
+    {
+        await VerifyAsync($$"""
+            #nullable enable
+            public union Result(int, string);
+            class C
+            {
+                void M(bool keepGoing)
+                {
+                    Result? value = 1;
+                    while (keepGoing)
+                    {
+                        switch (value)
+                        {
+                            case int: value = null; break;
+                            case string: break;
+                            {{(handlesNull ? "case null: break;" : "")}}
+                        }
+                    }
+                }
+            }
+            """, expectedCount);
+    }
+
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public async ValueTask GuardCanReferenceFunctionDeclaredInSwitchSection(bool handlesString, int expectedCount)
+    {
+        await VerifyAsync($$"""
+            public union Result(int, string);
+            class C
+            {
+                void M(Result value)
+                {
+                    switch (value)
+                    {
+                        case int number when Accept(number):
+                            static bool Accept(int number) => number > 0;
+                            break;
+                        case int: break;
+                        {{(handlesString ? "case string: break;" : "")}}
+                    }
+                }
+            }
+            """, expectedCount);
+    }
+
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public async ValueTask NestedGuardSwitchWarningIsNotAttributedToOuterStatement(bool exhaustiveOuter, int expectedCount)
+    {
+        await VerifyAsync($$"""
+            public union Result(int, string);
+            class C
+            {
+                void M(Result value, Result other)
+                {
+                    switch (value)
+                    {
+                        case int when other switch { int => true }: break;
+                        {{(exhaustiveOuter ? "case int or string: break;" : "case int: break;")}}
+                    }
+                }
+            }
+            """, expectedCount);
+    }
+
+    [Fact(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    public async ValueTask NestedInputSwitchWarningIsNotAttributedToOuterStatement()
+    {
+        await VerifyAsync("""
+            public union Result(int, string);
+            class C
+            {
+                void M(Result value)
+                {
+                    switch (value switch { int number => new Result(number) })
+                    {
+                        case int or string: break;
+                    }
+                }
+            }
+            """, 0);
+    }
+
+    [Fact(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    public async ValueTask CaseCanReferenceConstantFromPreviousSwitchSection()
+    {
+        await VerifyAsync("""
+            public union Result(int, string);
+            class C
+            {
+                void M(Result value)
+                {
+                    switch (value)
+                    {
+                        case string:
+                            const int Number = 0;
+                            break;
+                        case Number: break;
+                    }
+                }
+            }
+            """, 1);
+    }
+
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData(true, 1)]
+    [InlineData(false, 0)]
+    public async ValueTask NullableDirectiveInCaseBodyDoesNotChangeInputCoverage(bool nullableEnabled, int expectedCount)
+    {
+        await VerifyAsync($$"""
+            #nullable {{(nullableEnabled ? "enable" : "disable")}}
+            public union Result(int, string);
+            class C
+            {
+                void M(Result? value)
+                {
+                    switch (value)
+                    {
+                        case int:
+            #nullable {{(nullableEnabled ? "disable" : "enable")}}
+                            break;
+                        case string: break;
+                    }
+                }
+            }
+            """, expectedCount);
+    }
+
     [Theory]
     [InlineData("int", "case 1: break;")]
     [InlineData("object", "case int: break;")]

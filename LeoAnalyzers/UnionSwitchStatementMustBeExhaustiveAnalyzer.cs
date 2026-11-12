@@ -96,14 +96,21 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
             foreach (var label in section.Labels)
             {
                 PatternSyntax pattern;
-                WhenClauseSyntax? guard = null;
                 switch (label)
                 {
                     case DefaultSwitchLabelSyntax:
                         return;
                     case CasePatternSwitchLabelSyntax patternLabel:
+                        // Only a compile-time true guard contributes guaranteed
+                        // coverage. Keep all other guards in the original switch,
+                        // where their declarations, scope and side effects belong.
+                        if (patternLabel.WhenClause is { } when &&
+                            context.SemanticModel.GetConstantValue(when.Condition, context.CancellationToken) is not
+                                { HasValue: true, Value: true })
+                        {
+                            continue;
+                        }
                         pattern = patternLabel.Pattern;
-                        guard = patternLabel.WhenClause;
                         break;
                     case CaseSwitchLabelSyntax constantLabel:
                         pattern = SyntaxFactory.ConstantPattern(constantLabel.Value);
@@ -112,32 +119,48 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
                         return;
                 }
 
-                arms.Add(SyntaxFactory.SwitchExpressionArm(pattern, guard,
+                arms.Add(SyntaxFactory.SwitchExpressionArm(pattern, null,
                     SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, SyntaxFactory.Literal(0))));
             }
         }
 
-        // ISwitchExpressionOperation.IsExhaustive alone does not include the
-        // compiler's union-specific and nullable-flow analysis. Ask for the
-        // actual compiler diagnostics in a temporary copy of this syntax tree.
-        // Only the input, patterns and guards matter; arm bodies return zero.
+        var tree = statement.SyntaxTree;
+        var root = tree.GetRoot(context.CancellationToken);
+        var inputName = "__LA0003_input_" + statement.SpanStart;
+        while (root.DescendantTokens().Any(t => t.ValueText == inputName) ||
+            !context.SemanticModel.LookupSymbols(statement.SpanStart, name: inputName).IsEmpty)
+        {
+            inputName += "_";
+        }
+
+        // Keep the original switch intact, including its guards, declarations
+        // and loop-carried assignments. A final guarded case captures the same
+        // input value without evaluating the governing expression a second time.
         var marker = new SyntaxAnnotation();
-        var expression = SyntaxFactory.SwitchExpression(SyntaxFactory.ParenthesizedExpression(statement.Expression), SyntaxFactory.SeparatedList(arms))
+        var expression = SyntaxFactory.SwitchExpression(SyntaxFactory.IdentifierName(inputName), SyntaxFactory.SeparatedList(arms))
             .WithAdditionalAnnotations(marker);
 
-        // A cast supplies a result type even for an empty switch. Calling
-        // ToString makes a valid statement in void, async and iterator methods,
-        // without introducing a local that could shadow a name in the input.
-        var replacement = SyntaxFactory.ExpressionStatement(SyntaxFactory.InvocationExpression(
-            SyntaxFactory.MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression,
-                SyntaxFactory.ParenthesizedExpression(SyntaxFactory.CastExpression(
+        // Equals is not a compile-time constant. Its false path preserves the
+        // original no-match path during flow analysis, while its true path lets
+        // Roslyn analyze the probe. Nothing in this temporary tree is executed.
+        // The cast supplies a result type even when no patterns cover the input.
+        var guardCondition = SyntaxFactory.BinaryExpression(SyntaxKind.LogicalAndExpression,
+            SyntaxFactory.ParseExpression("(0).Equals(1)"),
+            SyntaxFactory.BinaryExpression(SyntaxKind.EqualsExpression,
+                SyntaxFactory.CastExpression(
                     SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.IntKeyword)),
-                    SyntaxFactory.ParenthesizedExpression(expression))),
-                SyntaxFactory.IdentifierName("ToString")))).WithTriviaFrom(statement);
-        var tree = statement.SyntaxTree;
-        var root = tree.GetRoot(context.CancellationToken).ReplaceNode(statement, replacement);
+                    SyntaxFactory.ParenthesizedExpression(expression)),
+                SyntaxFactory.LiteralExpression(SyntaxKind.NumericLiteralExpression, SyntaxFactory.Literal(0))));
+        var probeLabel = SyntaxFactory.CasePatternSwitchLabel(
+            SyntaxFactory.VarPattern(SyntaxFactory.SingleVariableDesignation(SyntaxFactory.Identifier(inputName))),
+            SyntaxFactory.WhenClause(guardCondition), SyntaxFactory.Token(SyntaxKind.ColonToken));
+        var probeSection = SyntaxFactory.SwitchSection(SyntaxFactory.SingletonList<SwitchLabelSyntax>(probeLabel),
+                SyntaxFactory.SingletonList<StatementSyntax>(SyntaxFactory.BreakStatement()))
+            .WithLeadingTrivia(NullableDirectives(context.SemanticModel.GetNullableContext(statement.SwitchKeyword.SpanStart)))
+            .WithTrailingTrivia(NullableDirectives(context.SemanticModel.GetNullableContext(statement.CloseBraceToken.FullSpan.Start)));
+        root = root.ReplaceNode(statement, statement.AddSections(probeSection));
         var newTree = tree.WithRootAndOptions(root, tree.Options);
-        var newExpression = newTree.GetRoot(context.CancellationToken).GetAnnotatedNodes(marker).Single();
+        var newExpression = (SwitchExpressionSyntax)newTree.GetRoot(context.CancellationToken).GetAnnotatedNodes(marker).Single();
         var probe = compilation.Value.ReplaceSyntaxTree(tree, newTree);
 
         // This targeted binding is intentional: public operation APIs do not
@@ -147,10 +170,20 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
         var diagnostics = probe.GetSemanticModel(newTree).GetDiagnostics(newExpression.Span, context.CancellationToken);
 #pragma warning restore RS1030
         if (!diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error) &&
-            diagnostics.Any(d => exhaustivenessDiagnosticIds.Contains(d.Id)))
+            diagnostics.Any(d => d.Location.SourceTree == newTree && d.Location.SourceSpan == newExpression.SwitchKeyword.Span &&
+                exhaustivenessDiagnosticIds.Contains(d.Id)))
         {
             context.ReportDiagnostic(Diagnostic.Create(rule, statement.SwitchKeyword.GetLocation(),
                 type!.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
         }
+    }
+
+    private static SyntaxTriviaList NullableDirectives(NullableContext context)
+    {
+        // Directives inside the original cases must not change the probe's
+        // nullable-warning context or leak a new context into following code.
+        var warnings = (context & NullableContext.WarningsEnabled) != 0 ? "enable" : "disable";
+        var annotations = (context & NullableContext.AnnotationsEnabled) != 0 ? "enable" : "disable";
+        return SyntaxFactory.ParseLeadingTrivia("\n#nullable " + warnings + " warnings\n#nullable " + annotations + " annotations\n");
     }
 }
