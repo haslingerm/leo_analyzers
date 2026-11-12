@@ -5,6 +5,7 @@
         <Nullable>enable</Nullable>
         <LangVersion>13.0</LangVersion>
         <IsPackable>false</IsPackable>
+        <OutputType>Exe</OutputType>
         <RestoreAdditionalProjectSources>https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-tools/nuget/v3/index.json</RestoreAdditionalProjectSources>
     </PropertyGroup>  
     
