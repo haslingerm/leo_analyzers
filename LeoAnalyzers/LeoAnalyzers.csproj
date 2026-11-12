@@ -33,7 +33,7 @@
         <PackageId>HTLLeonding.Utility.LeoAnalyzers</PackageId>
         <PackageReadmeFile>Readme.md</PackageReadmeFile>
         <PackageType>Dependency</PackageType>
-        <PackageVersion>1.1.2</PackageVersion>
+        <PackageVersion>1.2.0</PackageVersion>
         <Authors>M. Haslinger</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageTags>HTL-Leonding;roslyn;analyzer</PackageTags>
@@ -50,6 +50,7 @@
     </Target>
 
     <ItemGroup>
+        <InternalsVisibleTo Include="LeoAnalyzers.Compiler.Tests" />
         <Content Include="AnalyzerReleases.Shipped.md">
             <Pack>true</Pack>
             <PackagePath>docs</PackagePath>

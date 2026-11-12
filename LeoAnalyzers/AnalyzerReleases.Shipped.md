@@ -11,3 +11,11 @@ LA0001  | Design   | Error    | Primary constructor parameters must not be reass
 Rule ID | Category | Severity | Notes
 --------|----------|----------|--------------------
 LA0002  | Design   | Warning  | Empty if or else blocks requires a comment.
+
+## Release 1.2.0
+
+### New Rules
+
+Rule ID | Category | Severity | Notes
+--------|----------|----------|--------------------
+LA0003  | Design   | Warning  | Switch statements over union types must be exhaustive.

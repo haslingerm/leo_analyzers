@@ -6,6 +6,7 @@ public static class Rules
 {
     public const string PrimaryConstructorParameterShouldBeReadOnly = "LA0001";
     public const string EmptyIfOrElseClauseRequiresComment = "LA0002";
+    public const string UnionSwitchStatementMustBeExhaustive = "LA0003";
     
     public static class Categories
     {
