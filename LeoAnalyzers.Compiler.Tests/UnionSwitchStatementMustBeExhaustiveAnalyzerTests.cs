@@ -691,6 +691,33 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzerTests
     }
 
     [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData("nameof(number)", false, 1)]
+    [InlineData("nameof(number)", true, 0)]
+    [InlineData("nameof(number) + \"!\"", false, 1)]
+    [InlineData("string and nameof(number)", false, 1)]
+    [InlineData("string { Length: > 0 } and nameof(number)", false, 1)]
+    [InlineData("string { Length: > (nameof(number) == \"number\" ? 0 : 1) }", false, 1)]
+    public async ValueTask SharedSectionConstantsKeepTheirOriginalScope(string constantPattern, bool handlesAllStrings, int expectedCount)
+    {
+        await VerifyAsync($$"""
+            public union Result(int, string);
+            class C
+            {
+                void M(Result value)
+                {
+                    switch (value)
+                    {
+                        case int number:
+                        case {{constantPattern}}:
+                            break;
+                        {{(handlesAllStrings ? "case string: break;" : "")}}
+                    }
+                }
+            }
+            """, expectedCount);
+    }
+
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
     [InlineData(true, 1)]
     [InlineData(false, 0)]
     public async ValueTask NullableDirectiveInCaseBodyDoesNotChangeInputCoverage(bool nullableEnabled, int expectedCount)

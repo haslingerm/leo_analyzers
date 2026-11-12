@@ -89,6 +89,7 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
             return;
         }
 
+        var constants = new SwitchPatternConstantRewriter(context.SemanticModel, context.CancellationToken);
         var arms = ImmutableArray.CreateBuilder<SwitchExpressionArmSyntax>();
         foreach (var section in statement.Sections)
         {
@@ -110,10 +111,10 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
                         {
                             continue;
                         }
-                        pattern = patternLabel.Pattern;
+                        pattern = (PatternSyntax)constants.Visit(patternLabel.Pattern)!;
                         break;
                     case CaseSwitchLabelSyntax constantLabel:
-                        pattern = SyntaxFactory.ConstantPattern(constantLabel.Value);
+                        pattern = SyntaxFactory.ConstantPattern(constants.ResolveConstant(constantLabel.Value));
                         break;
                     default:
                         return;
