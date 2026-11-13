@@ -772,6 +772,45 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzerTests
             """, expectedCount);
     }
 
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData("", "int NAME = 0; SWITCH")]
+    [InlineData("", "SWITCH int NAME = 0;")]
+    [InlineData("", "SWITCH void L() { int NAME = 0; }")]
+    [InlineData("", "System.Action<int> a = NAME => { SWITCH };")]
+    [InlineData("int NAME;", "SWITCH")]
+    [InlineData("int NAME;", "switch (value) { case int when NAME > 0: break; case int: break; MORE }")]
+    [InlineData("", "switch (value) { case int: int NAME = 0; break; MORE }")]
+    [InlineData("", "switch (value) { case int NAME: break; MORE }")]
+    public async ValueTask ProbeVariableNameAvoidsExistingNames(string member, string body)
+    {
+        // The probe variable name contains the switch position. Code that
+        // already uses that exact name must not change the analysis result.
+        foreach (var (more, expectedCount) in new[] { ("", 1), ("case string: break;", 0) })
+        {
+            var template = $$"""
+                #nullable enable
+                public union Result(int, string);
+                class C
+                {
+                    {{member}}
+                    void M(Result value)
+                    {
+                        {{body.Replace("SWITCH", "switch (value) { case int: break; MORE }").Replace("MORE", more)}}
+                    }
+                }
+                """;
+            var source = template;
+            var position = -1;
+            while (source.IndexOf("switch (value)", StringComparison.Ordinal) != position)
+            {
+                position = source.IndexOf("switch (value)", StringComparison.Ordinal);
+                source = template.Replace("NAME", "__LA0003_input_" + position);
+            }
+
+            await VerifyAsync(source, expectedCount);
+        }
+    }
+
     [Theory]
     [InlineData("int", "case 1: break;")]
     [InlineData("object", "case int: break;")]

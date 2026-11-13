@@ -147,4 +147,165 @@ public sealed class EmptyIfOrElseClauseRequiresCommentTests
                            """;
         await Create(Src).RunAsync(TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async ValueTask CommentOnOwnLineBeforeSemicolon_NoDiagnostic()
+    {
+        const string Src = """
+                           class C
+                           {
+                               void M(bool b)
+                               {
+                                   if (b)
+                                       // intentionally empty
+                                       ;
+                                   else
+                                       /* nothing to do */ ;
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask DocumentationStyleComment_NoDiagnostic()
+    {
+        const string Src = """
+                           class C
+                           {
+                               void M(bool b)
+                               {
+                                   if (b)
+                                   {
+                                       /// intentionally empty
+                                   }
+                                   else
+                                       /// intentionally empty
+                                       ;
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask CommentAfterClosingBrace_NoDiagnostic()
+    {
+        const string Src = """
+                           class C
+                           {
+                               void M(bool b)
+                               {
+                                   if (b) { } // intentionally empty
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask CommentOnConditionLineDoesNotBelongToClause()
+    {
+        // Matches the Readme: an annotation after the condition does not
+        // explain the empty clause itself.
+        const string Src = """
+                           class C
+                           {
+                               void M(bool b)
+                               {
+                                   if (b) // annotation
+                                   [|{
+                                   }|]
+                                   else /* annotation */ [|;|]
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask InactivePreprocessorCode_NoDiagnostic()
+    {
+        const string Src = """
+                           class C
+                           {
+                               void M(bool b, int x)
+                               {
+                                   if (b)
+                                   {
+                           #if UNDEFINED_SYMBOL
+                                       x++;
+                           #endif
+                                   }
+                                   else
+                           #if UNDEFINED_SYMBOL
+                                       x--;
+                           #else
+                                       ;
+                           #endif
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask EmptyPreprocessorBranch_IsStillEmpty()
+    {
+        const string Src = """
+                           class C
+                           {
+                               void M(bool b)
+                               {
+                                   if (b)
+                                   [|{
+                           #if UNDEFINED_SYMBOL
+                           #endif
+                                   }|]
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask NestedIfInsideEmptyCheckedClause()
+    {
+        const string Src = """
+                           class C
+                           {
+                               void M(bool a, bool b)
+                               {
+                                   if (a)
+                                   {
+                                       if (b) [|{ }|]
+                                   }
+                                   else [|{ }|]
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask LambdaAndLocalFunctionBodies()
+    {
+        const string Src = """
+                           using System;
+
+                           class C
+                           {
+                               Action<bool> A = b => { if (b) [|{ }|] };
+
+                               void M()
+                               {
+                                   void L(bool b)
+                                   {
+                                       if (b) [|;|]
+                                   }
+                               }
+                           }
+                           """;
+        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+    }
 }

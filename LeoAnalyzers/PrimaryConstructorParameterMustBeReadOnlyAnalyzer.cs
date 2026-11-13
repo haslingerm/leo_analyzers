@@ -1,6 +1,4 @@
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Linq;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -33,136 +31,95 @@ public sealed class PrimaryConstructorParameterMustBeReadOnlyAnalyzer : Diagnost
         context.EnableConcurrentExecution();
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
 
-        context.RegisterCompilationStartAction(compStartContext =>
-        {
-            compStartContext.RegisterOperationAction(AnalyzerAssignment, OperationKind.SimpleAssignment);
-            compStartContext.RegisterOperationAction(AnalyzerAssignment, OperationKind.CompoundAssignment);
-            compStartContext.RegisterOperationAction(AnalyzerAssignment, OperationKind.CoalesceAssignment);
-            compStartContext.RegisterOperationAction(AnalyzerAssignment, OperationKind.DeconstructionAssignment);
-            compStartContext.RegisterOperationAction(AnalyzerIncrementOrDecrement, OperationKind.Increment);
-            compStartContext.RegisterOperationAction(AnalyzerIncrementOrDecrement, OperationKind.Decrement);
-            compStartContext.RegisterOperationAction(AnalyzerInitializer, OperationKind.VariableDeclarator);
-            compStartContext.RegisterOperationAction(AnalyzerArgument, OperationKind.Argument);
-        });
+        context.RegisterOperationAction(AnalyzeAssignment, OperationKind.SimpleAssignment,
+            OperationKind.CompoundAssignment, OperationKind.CoalesceAssignment, OperationKind.DeconstructionAssignment);
+        context.RegisterOperationAction(AnalyzeIncrementOrDecrement, OperationKind.Increment, OperationKind.Decrement);
+        context.RegisterOperationAction(AnalyzeInitializer, OperationKind.VariableDeclarator);
+        context.RegisterOperationAction(AnalyzeArgument, OperationKind.Argument);
     }
 
-    private static void AnalyzerArgument(OperationAnalysisContext context)
+    private static void AnalyzeArgument(OperationAnalysisContext context)
     {
         var operation = (IArgumentOperation) context.Operation;
-        if (operation.Parameter is { RefKind: RefKind.Ref or RefKind.Out } &&
-            IsPrimaryConstructorParameter(operation.Value, context.CancellationToken))
+        if (operation.Parameter is { RefKind: RefKind.Ref or RefKind.Out })
         {
-            var diagnostic = Diagnostic.Create(rule,
-                                               operation.Value.Syntax.GetLocation(),
-                                               operation.Parameter.Name);
-            context.ReportDiagnostic(diagnostic);
+            ReportWritableReferences(context, operation.Value);
         }
     }
 
-    private static void AnalyzerInitializer(OperationAnalysisContext context)
+    private static void AnalyzeInitializer(OperationAnalysisContext context)
     {
+        // ref int alias = ref parameter; allows writes through the alias.
         var operation = (IVariableDeclaratorOperation) context.Operation;
-        if (operation.Initializer is null)
+        if (operation is { Initializer: { } initializer, Symbol.RefKind: RefKind.Ref })
         {
-            return;
-        }
-
-        if (operation.Symbol.RefKind is RefKind.Ref or RefKind.Out)
-        {
-            if (IsPrimaryConstructorParameter(operation.Initializer.Value, context.CancellationToken))
-            {
-                var diagnostic = Diagnostic.Create(rule,
-                                                   operation.Initializer.Value.Syntax.GetLocation());
-                context.ReportDiagnostic(diagnostic);
-            }
+            ReportWritableReferences(context, initializer.Value);
         }
     }
 
-    private static void AnalyzerIncrementOrDecrement(OperationAnalysisContext context)
+    private static void AnalyzeIncrementOrDecrement(OperationAnalysisContext context)
     {
         var operation = (IIncrementOrDecrementOperation) context.Operation;
-        var target = operation.Target;
-
-        if (IsPrimaryConstructorParameter(target, context.CancellationToken))
+        if (IsPrimaryConstructorParameter(operation.Target, context.CancellationToken))
         {
-            var diagnostic = Diagnostic.Create(rule,
-                                               operation.Syntax.GetLocation(),
-                                               target.Syntax.ToString());
-            context.ReportDiagnostic(diagnostic);
+            context.ReportDiagnostic(Diagnostic.Create(rule, operation.Syntax.GetLocation()));
         }
     }
 
-    private void AnalyzerAssignment(OperationAnalysisContext context)
+    private static void AnalyzeAssignment(OperationAnalysisContext context)
     {
         var operation = (IAssignmentOperation) context.Operation;
-        var target = operation.Target;
-        if (target is ITupleOperation)
+
+        // alias = ref parameter; rebinds a writable ref to the parameter.
+        if (operation is ISimpleAssignmentOperation { IsRef: true } refAssignment && IsWritableRef(refAssignment.Target))
         {
-            foreach (var innerTarget in GetAllPrimaryCtorAssignmentTargets(target, context.CancellationToken))
+            ReportWritableReferences(context, refAssignment.Value);
+        }
+
+        ReportAssignmentTargets(context, operation.Target);
+    }
+
+    private static void ReportAssignmentTargets(OperationAnalysisContext context, IOperation target)
+    {
+        // Deconstruction targets may be nested tuples: (p, (q, r)) = ...
+        if (target is ITupleOperation tuple)
+        {
+            foreach (var element in tuple.Elements)
             {
-                var parameterName = GetParameterName(innerTarget);
-                if (parameterName != null)
-                {
-                    var diagnostic = Diagnostic.Create(rule,
-                                                       innerTarget.Syntax.GetLocation(),
-                                                       parameterName);
-                    context.ReportDiagnostic(diagnostic);
-                }
+                ReportAssignmentTargets(context, element);
             }
         }
         else if (IsPrimaryConstructorParameter(target, context.CancellationToken))
         {
-            var parameterName = GetParameterName(target);
-            if (parameterName != null)
-            {
-                var diagnostic = Diagnostic.Create(rule,
-                                                   target.Syntax.GetLocation(),
-                                                   parameterName);
-                context.ReportDiagnostic(diagnostic);
-            }
-        }
-
-        return;
-
-        static string? GetParameterName(IOperation operation)
-        {
-            if (operation is IParameterReferenceOperation paramRef)
-            {
-                return paramRef.Parameter.Name;
-            }
-
-            return null;
-        }
-
-        static IEnumerable<IOperation> GetAllPrimaryCtorAssignmentTargets(
-            IOperation operation, CancellationToken cancellationToken)
-        {
-            List<IOperation>? result = null;
-            GetAllAssignmentTargets(ref result, operation, cancellationToken);
-
-            return result ?? Enumerable.Empty<IOperation>();
-
-            static void GetAllAssignmentTargets(ref List<IOperation>? operations, IOperation operation,
-                                                CancellationToken cancellationToken)
-            {
-                if (operation is ITupleOperation tuple)
-                {
-                    foreach (var element in tuple.Elements)
-                    {
-                        GetAllAssignmentTargets(ref operations, element, cancellationToken);
-                    }
-                }
-                else
-                {
-                    if (IsPrimaryConstructorParameter(operation, cancellationToken))
-                    {
-                        operations ??= [];
-                        operations.Add(operation);
-                    }
-                }
-            }
+            context.ReportDiagnostic(Diagnostic.Create(rule, target.Syntax.GetLocation()));
         }
     }
+
+    private static void ReportWritableReferences(OperationAnalysisContext context, IOperation value)
+    {
+        // A ref conditional can produce a reference to either branch:
+        // ref (condition ? ref p : ref q)
+        if (value is IConditionalOperation { IsRef: true } conditional)
+        {
+            ReportWritableReferences(context, conditional.WhenTrue);
+            if (conditional.WhenFalse is { } whenFalse)
+            {
+                ReportWritableReferences(context, whenFalse);
+            }
+        }
+        else if (IsPrimaryConstructorParameter(value, context.CancellationToken))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(rule, value.Syntax.GetLocation()));
+        }
+    }
+
+    private static bool IsWritableRef(IOperation target) => target switch
+    {
+        ILocalReferenceOperation local => local.Local.RefKind == RefKind.Ref,
+        IParameterReferenceOperation parameter => parameter.Parameter.RefKind is RefKind.Ref or RefKind.Out,
+        IFieldReferenceOperation field => field.Field.RefKind == RefKind.Ref,
+        _ => false
+    };
 
     private static bool IsPrimaryConstructorParameter(IOperation operation, CancellationToken cancellationToken)
     {
@@ -174,10 +131,12 @@ public sealed class PrimaryConstructorParameterMustBeReadOnlyAnalyzer : Diagnost
                 } ctor
             })
         {
+            // A primary constructor is declared by its type declaration,
+            // while every other constructor has its own declaration syntax.
             foreach (var syntaxRef in ctor.DeclaringSyntaxReferences)
             {
-                var syntax = syntaxRef.GetSyntax(cancellationToken);
-                if (syntax is ClassDeclarationSyntax or StructDeclarationSyntax)
+                if (syntaxRef.GetSyntax(cancellationToken) is ClassDeclarationSyntax or StructDeclarationSyntax
+                    or RecordDeclarationSyntax)
                 {
                     return true;
                 }
