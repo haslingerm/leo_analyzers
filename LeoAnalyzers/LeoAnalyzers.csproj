@@ -33,7 +33,7 @@
         <PackageId>HTLLeonding.Utility.LeoAnalyzers</PackageId>
         <PackageReadmeFile>Readme.md</PackageReadmeFile>
         <PackageType>Dependency</PackageType>
-        <PackageVersion>1.2.0</PackageVersion>
+        <Version>1.2.1</Version>
         <Authors>M. Haslinger</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageTags>HTL-Leonding;roslyn;analyzer</PackageTags>
