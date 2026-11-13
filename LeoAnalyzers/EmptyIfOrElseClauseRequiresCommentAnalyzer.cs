@@ -45,46 +45,22 @@ public sealed class EmptyIfOrElseClauseRequiresCommentAnalyzer : DiagnosticAnaly
 
     private static void AnalyzeClause(SyntaxNodeAnalysisContext context, StatementSyntax statement, bool isElse)
     {
-        // Empty block: {}
-        if (statement is BlockSyntax { Statements.Count: 0 } block)
+        // Empty block {} or a lone semicolon: if (x);
+        if (statement is BlockSyntax { Statements.Count: 0 } or EmptyStatementSyntax &&
+            !statement.DescendantTrivia(descendIntoTrivia: true).Any(IsCommentOrInactiveCode))
         {
-            if (!ContainsComment(block))
-            {
-                Report(context, block, isElse);
-            }
-            return;
-        }
-
-        // Empty statement: a lone semicolon after if/else (if (x);)
-        if (statement is EmptyStatementSyntax emptyStmt)
-        {
-            if (!ContainsComment(emptyStmt.SemicolonToken))
-            {
-                Report(context, emptyStmt, isElse);
-            }
+            var diagnostic = Diagnostic.Create(rule, statement.GetLocation(), isElse ? "else" : "if");
+            context.ReportDiagnostic(diagnostic);
         }
     }
 
-    private static bool ContainsComment(BlockSyntax block)
-    {
-        return block
-            .DescendantTrivia(descendIntoTrivia: true)
-            .Any(t => t.IsKind(SyntaxKind.SingleLineCommentTrivia) ||
-                      t.IsKind(SyntaxKind.MultiLineCommentTrivia) ||
-                      t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) ||
-                      t.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia));
-    }
-
-    private static bool ContainsComment(SyntaxToken token)
-    {
-        return token.LeadingTrivia.Concat(token.TrailingTrivia)
-            .Any(t => t.IsKind(SyntaxKind.SingleLineCommentTrivia) ||
-                      t.IsKind(SyntaxKind.MultiLineCommentTrivia));
-    }
-
-    private static void Report(SyntaxNodeAnalysisContext context, SyntaxNode node, bool isElse)
-    {
-        var diagnostic = Diagnostic.Create(rule, node.GetLocation(), isElse ? "else" : "if");
-        context.ReportDiagnostic(diagnostic);
-    }
+    // Code excluded by an inactive #if is not an empty clause: it is
+    // compiled in other configurations. Roslyn lexes whitespace-only
+    // inactive lines as whitespace, but guard against hosts that do not.
+    private static bool IsCommentOrInactiveCode(SyntaxTrivia trivia) =>
+        trivia.IsKind(SyntaxKind.SingleLineCommentTrivia) ||
+        trivia.IsKind(SyntaxKind.MultiLineCommentTrivia) ||
+        trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) ||
+        trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia) ||
+        (trivia.IsKind(SyntaxKind.DisabledTextTrivia) && !string.IsNullOrWhiteSpace(trivia.ToString()));
 }

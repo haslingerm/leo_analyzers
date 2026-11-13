@@ -127,8 +127,11 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
 
         var tree = statement.SyntaxTree;
         var root = tree.GetRoot(context.CancellationToken);
+        // The probe variable is scoped to its own switch section. It can only
+        // clash with names used inside this statement or declared in an
+        // enclosing scope, so the scan need not cover the whole file.
         var inputName = "__LA0003_input_" + statement.SpanStart;
-        while (root.DescendantTokens().Any(t => t.ValueText == inputName) ||
+        while (statement.DescendantTokens().Any(t => t.ValueText == inputName) ||
             !context.SemanticModel.LookupSymbols(statement.SpanStart, name: inputName).IsEmpty)
         {
             inputName += "_";
