@@ -55,11 +55,12 @@ public sealed class EmptyIfOrElseClauseRequiresCommentAnalyzer : DiagnosticAnaly
     }
 
     // Code excluded by an inactive #if is not an empty clause: it is
-    // compiled in other configurations.
+    // compiled in other configurations. Roslyn lexes whitespace-only
+    // inactive lines as whitespace, but guard against hosts that do not.
     private static bool IsCommentOrInactiveCode(SyntaxTrivia trivia) =>
         trivia.IsKind(SyntaxKind.SingleLineCommentTrivia) ||
         trivia.IsKind(SyntaxKind.MultiLineCommentTrivia) ||
         trivia.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) ||
         trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia) ||
-        trivia.IsKind(SyntaxKind.DisabledTextTrivia);
+        (trivia.IsKind(SyntaxKind.DisabledTextTrivia) && !string.IsNullOrWhiteSpace(trivia.ToString()));
 }

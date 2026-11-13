@@ -249,23 +249,20 @@ public sealed class EmptyIfOrElseClauseRequiresCommentTests
         await Create(Src).RunAsync(TestContext.Current.CancellationToken);
     }
 
-    [Fact]
-    public async ValueTask EmptyPreprocessorBranch_IsStillEmpty()
+    // An inactive branch holding only whitespace is empty in every
+    // configuration, so it must not count as content.
+    [Theory]
+    [InlineData("")]
+    [InlineData("\n")]
+    [InlineData("        \n")]
+    [InlineData("\t  \n\n   \n")]
+    public async ValueTask EmptyPreprocessorBranch_IsStillEmpty(string inactive)
     {
-        const string Src = """
-                           class C
-                           {
-                               void M(bool b)
-                               {
-                                   if (b)
-                                   [|{
-                           #if UNDEFINED_SYMBOL
-                           #endif
-                                   }|]
-                               }
-                           }
-                           """;
-        await Create(Src).RunAsync(TestContext.Current.CancellationToken);
+        var src = "class C\n{\n    void M(bool b)\n    {\n" +
+                  "        if (b)\n        [|{\n#if UNDEFINED_SYMBOL\n" + inactive + "#endif\n        }|]\n" +
+                  "        else\n#if UNDEFINED_SYMBOL\n" + inactive + "#else\n            [|;|]\n#endif\n" +
+                  "    }\n}\n";
+        await Create(src).RunAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact]
