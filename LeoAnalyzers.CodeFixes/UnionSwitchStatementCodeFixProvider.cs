@@ -252,7 +252,9 @@ public sealed class UnionSwitchStatementCodeFixProvider : CodeFixProvider
                                      .WithAdditionalAnnotations(Simplifier.Annotation);
         var body = SyntaxFactory.ThrowStatement(
             SyntaxFactory.ObjectCreationExpression(exception).WithArgumentList(SyntaxFactory.ArgumentList()));
-        return SyntaxFactory.SwitchSection(SyntaxFactory.SingletonList(label), SyntaxFactory.SingletonList<StatementSyntax>(body))
+        var block = SyntaxFactory.Block(body);
+        block = block.WithCloseBraceToken(block.CloseBraceToken.WithTrailingTrivia(SyntaxFactory.TriviaList()));
+        return SyntaxFactory.SwitchSection(SyntaxFactory.SingletonList(label), SyntaxFactory.SingletonList<StatementSyntax>(block))
                             .WithAdditionalAnnotations(addedSection, Formatter.Annotation);
     }
 }
