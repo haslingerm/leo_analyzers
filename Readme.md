@@ -53,8 +53,10 @@ void Handle(Result result)
     switch (result) // LA0003: missing string case
     {
         case int number:
+        {
             System.Console.WriteLine(number);
             break;
+        }
     }
 }
 
@@ -72,21 +74,28 @@ int Length(Result result)
     switch (result)
     {
         case int number:
+        {
             return number;
+        }
         case string text:
+        {
             return text.Length;
+        }
         default:
+        {
             throw new UnreachableException(); // guard, not coverage: a missing case is still reported
+        }
     }
 }
 ```
 
 Any other `default` (or `case var x:`) is treated as deliberately handling the remaining values.
 
-**Code fix:** *Add missing cases*: adds `case T: throw new NotImplementedException();` for every case type that is
+**Code fix:** *Add missing cases*: adds `case T: { throw new NotImplementedException(); }` for every case type that is
 not handled yet, after the existing cases (a trailing guard stays last), and `case null:` where null is what is
 missing. A section is only added if it does not cause any compiler error and really matches the case type (otherwise a
-type-only form such as `case Circle _:` is used). Not offered for switches containing `#if` regions.
+type-only form such as `case Circle _:` is used). New sections are generated as blocks, indented according to the
+project's formatting settings (`csharp_indent_case_contents_when_block`). Not offered for switches containing `#if` regions.
 The new sections deliberately throw instead of `break`: a value that previously fell through the switch unnoticed now
 fails loudly until the case is implemented.
 

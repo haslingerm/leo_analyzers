@@ -49,7 +49,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case Square:
                             break;
                         case Circle _:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -96,7 +98,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int:
                             break;
                         case global::Square:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -138,7 +142,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case NotFound:
                             break;
                         case ValueTuple<int, string> _:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -213,9 +219,13 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int:
                             break;
                         case string:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                         case NotFound:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -267,7 +277,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int:
                             break;
                         case NotFound:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -307,7 +319,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int:
                             break;
                         case string:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -345,11 +359,17 @@ public sealed class UnionSwitchStatementCodeFixTests
                     switch (result)
                     {
                         case int:
-                            throw new System.NotImplementedException();
+                            {
+                                throw new System.NotImplementedException();
+                            }
                         case string:
-                            throw new System.NotImplementedException();
+                            {
+                                throw new System.NotImplementedException();
+                            }
                         case Result.Missing:
-                            throw new System.NotImplementedException();
+                            {
+                                throw new System.NotImplementedException();
+                            }
                     }
                 }
             }
@@ -393,7 +413,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int i:
                             return i;
                         case string:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                         default:
                             throw new UnreachableException();
                     }
@@ -437,7 +459,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int or string:
                             break;
                         case NotFound:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -481,7 +505,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case string:
                             break;
                         case int:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -525,7 +551,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case string:
                             break;
                         case null:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -566,7 +594,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case string:
                             break;
                         case int:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -611,7 +641,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case object:
                             break;
                         case null:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -647,11 +679,17 @@ public sealed class UnionSwitchStatementCodeFixTests
                     switch (result)
                     {
                         case int:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                         case string:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                         case null:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -693,7 +731,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int:
                             break;
                         case string:
-                            throw new System.NotImplementedException();
+                            {
+                                throw new System.NotImplementedException();
+                            }
                     }
                 }
             }
@@ -747,7 +787,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case Rocket:
                             break;
                         case NotFound:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
@@ -793,7 +835,9 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case int:
                             break;
                         case string:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
 
                     switch (b)
@@ -801,10 +845,61 @@ public sealed class UnionSwitchStatementCodeFixTests
                         case string:
                             break;
                         case int:
-                            throw new NotImplementedException();
+                            {
+                                throw new NotImplementedException();
+                            }
                     }
                 }
             }
             """);
+    }
+
+    [Fact]
+    public async ValueTask IndentCaseContentsWhenBlockDisabled_AlignsBracesWithTheLabel()
+    {
+        var test = Verify.Create("""
+            using System;
+
+            public union Result(int, string, bool);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    [|switch|] (result)
+                    {
+                        case int:
+                            break;
+                    }
+                }
+            }
+            """, """
+            using System;
+
+            public union Result(int, string, bool);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    switch (result)
+                    {
+                        case int:
+                            break;
+                        case string:
+                        {
+                            throw new NotImplementedException();
+                        }
+                        case bool:
+                        {
+                            throw new NotImplementedException();
+                        }
+                    }
+                }
+            }
+            """);
+        test.TestState.AnalyzerConfigFiles.Add(("/.editorconfig",
+            "root = true\n\n[*.cs]\ncsharp_indent_case_contents_when_block = false\n"));
+        await test.RunAsync(TestContext.Current.CancellationToken);
     }
 }
