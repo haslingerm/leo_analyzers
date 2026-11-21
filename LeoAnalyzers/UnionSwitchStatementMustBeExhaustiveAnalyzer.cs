@@ -19,12 +19,6 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
         DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
-    // Keep the package's Roslyn 4.12 baseline. This public property is available
-    // only on newer compiler hosts; older hosts simply do not run this rule.
-    private static readonly Func<ITypeSymbol, bool>? isUnion = CreateTypeAccessor<Func<ITypeSymbol, bool>>("IsUnion");
-    private static readonly Func<ITypeSymbol, ImmutableArray<ITypeSymbol>>? getUnionCaseTypes =
-        CreateTypeAccessor<Func<ITypeSymbol, ImmutableArray<ITypeSymbol>>>("UnionCaseTypes");
-
     private static readonly ImmutableArray<string> exhaustivenessDiagnosticIds =
         ["CS8509", "CS8524", "CS8655", "CS8846", "CS8847"];
 
@@ -35,7 +29,8 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
         context.EnableConcurrentExecution();
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
 
-        if (isUnion is not null)
+        // Older compiler hosts do not expose union types; they simply do not run this rule.
+        if (UnionSymbols.IsUnion is not null)
         {
             context.RegisterCompilationStartAction(start =>
             {
@@ -44,12 +39,6 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
                 start.RegisterSyntaxNodeAction(c => AnalyzeSwitch(c, compilation), SyntaxKind.SwitchStatement);
             });
         }
-    }
-
-    private static TDelegate? CreateTypeAccessor<TDelegate>(string propertyName) where TDelegate : Delegate
-    {
-        var getter = typeof(ITypeSymbol).GetProperty(propertyName)?.GetMethod;
-        return getter is null ? null : (TDelegate)Delegate.CreateDelegate(typeof(TDelegate), getter);
     }
 
     private static Compilation CreateProbeCompilation(Compilation compilation)
@@ -73,10 +62,8 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
 
         var typeInfo = context.SemanticModel.GetTypeInfo(statement.Expression, context.CancellationToken);
         var type = typeInfo.Type;
-        var unionType = type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable
-            ? nullable.TypeArguments[0]
-            : type;
-        if (unionType is null || !isUnion!(unionType))
+        var unionType = UnionSymbols.AsUnion(type);
+        if (unionType is null)
         {
             return;
         }
@@ -84,7 +71,7 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
         // Prove simple complete coverage using the original semantic model.
         // An inconclusive result always falls back to the compiler below.
         if (UnionSwitchCoverage.IsObviouslyExhaustive(statement, context.SemanticModel,
-                unionType, getUnionCaseTypes?.Invoke(unionType) ?? default, typeInfo, context.CancellationToken))
+                unionType, UnionSymbols.GetCaseTypes?.Invoke(unionType) ?? default, typeInfo, context.CancellationToken))
         {
             return;
         }
@@ -96,6 +83,13 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzer : DiagnosticAna
             context.CancellationToken.ThrowIfCancellationRequested();
             foreach (var label in section.Labels)
             {
+                // A catch-all that only throws guards against values outside the cases,
+                // e.g. default(TUnion); it handles no case, so the cases are still checked.
+                if (UnionSwitchCoverage.IsThrowOnlyCatchAll(label))
+                {
+                    continue;
+                }
+
                 PatternSyntax pattern;
                 switch (label)
                 {

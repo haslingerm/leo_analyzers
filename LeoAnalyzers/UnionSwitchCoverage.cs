@@ -21,6 +21,11 @@ internal static class UnionSwitchCoverage
             cancellationToken.ThrowIfCancellationRequested();
             foreach (var label in section.Labels)
             {
+                if (IsThrowOnlyCatchAll(label))
+                {
+                    continue;
+                }
+
                 if (label is DefaultSwitchLabelSyntax)
                 {
                     return true;
@@ -111,6 +116,54 @@ internal static class UnionSwitchCoverage
         // of an unmodified parameter in the current function. The compiler
         // retains responsibility for locals, captures and mutable inputs.
         return coversNull || !hasReferenceMember || HasStableParameterInput(statement, model, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Whether the label is a catch-all (<c>default:</c>, <c>case var x:</c> or <c>case var _:</c>, without a
+    ///     <c>when</c> clause) of a section whose only statement is a <c>throw</c>. Such a section is a guard for
+    ///     values outside the declared cases, such as <c>default(TUnion)</c>, and lets flow analysis know that the
+    ///     switch does not fall through. It does not handle any case.
+    /// </summary>
+    internal static bool IsThrowOnlyCatchAll(SwitchLabelSyntax label)
+    {
+        if (label.Parent is not SwitchSectionSyntax section || !IsThrowOnly(section))
+        {
+            return false;
+        }
+
+        if (label is DefaultSwitchLabelSyntax)
+        {
+            return true;
+        }
+
+        if (label is not CasePatternSwitchLabelSyntax { WhenClause: null } patternLabel)
+        {
+            return false;
+        }
+
+        var pattern = patternLabel.Pattern;
+        while (pattern is ParenthesizedPatternSyntax parenthesized)
+        {
+            pattern = parenthesized.Pattern;
+        }
+
+        return pattern is VarPatternSyntax or DiscardPatternSyntax;
+    }
+
+    private static bool IsThrowOnly(SwitchSectionSyntax section)
+    {
+        if (section.Statements.Count != 1)
+        {
+            return false;
+        }
+
+        var statement = section.Statements[0];
+        while (statement is BlockSyntax { Statements.Count: 1 } block)
+        {
+            statement = block.Statements[0];
+        }
+
+        return statement is ThrowStatementSyntax;
     }
 
     private static bool HasStableParameterInput(SwitchStatementSyntax statement, SemanticModel model, CancellationToken cancellationToken)

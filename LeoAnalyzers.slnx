@@ -1,6 +1,9 @@
 <Solution>
+  <Project Path="LeoAnalyzers/LeoAnalyzers.csproj" />
+  <Project Path="LeoAnalyzers.CodeFixes/LeoAnalyzers.CodeFixes.csproj" />
+  <Project Path="LeoAnalyzers.CodeFixes.Tests/LeoAnalyzers.CodeFixes.Tests.csproj" />
+  <Project Path="LeoAnalyzers.Package/LeoAnalyzers.Package.csproj" />
   <Project Path="LeoAnalyzers.Compiler.Tests/LeoAnalyzers.Compiler.Tests.csproj" />
   <Project Path="LeoAnalyzers.Sample/LeoAnalyzers.Sample.csproj" />
   <Project Path="LeoAnalyzers.Tests/LeoAnalyzers.Tests.csproj" />
-  <Project Path="LeoAnalyzers/LeoAnalyzers.csproj" />
 </Solution>

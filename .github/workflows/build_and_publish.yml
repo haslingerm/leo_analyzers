@@ -8,10 +8,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    
+
     env:
       BUILD_CONFIG: 'Release'
-      PROJ_DIR: ${{github.workspace}}/LeoAnalyzers
       NUGET_DIR: ${{github.workspace}}/nupkgs
 
     runs-on: ubuntu-latest
@@ -21,15 +20,23 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 11.0.x
+          # 11.0: build and the union tests (they use the SDK's compiler); 9.0: runtime of LeoAnalyzers.Tests
+          dotnet-version: |
+            9.0.x
+            11.0.x
       - name: Create Package Directory
         run: mkdir nupkgs
+      # The analyzers are used in every project, so nothing is published unless all tests pass.
+      - name: Test analyzers
+        run: dotnet test LeoAnalyzers.Tests -c ${{env.BUILD_CONFIG}}
+      - name: Test analyzers against the SDK compiler (unions)
+        run: dotnet test LeoAnalyzers.Compiler.Tests -c ${{env.BUILD_CONFIG}}
+      - name: Test code fixes
+        run: dotnet test LeoAnalyzers.CodeFixes.Tests -c ${{env.BUILD_CONFIG}}
       - name: Build
-        run: dotnet build -c ${{env.BUILD_CONFIG}}
-        working-directory: ${{env.PROJ_DIR}}
+        run: dotnet build LeoAnalyzers.Package -c ${{env.BUILD_CONFIG}}
       - name: Pack
-        run: dotnet pack -c ${{env.BUILD_CONFIG}} --output ${{env.NUGET_DIR}}
-        working-directory: ${{env.PROJ_DIR}}
+        run: dotnet pack LeoAnalyzers.Package -c ${{env.BUILD_CONFIG}} --no-build --output ${{env.NUGET_DIR}}
       - name: NuGet login
         uses: NuGet/login@v1
         id: nuget-login
