@@ -8,6 +8,135 @@ namespace LeoAnalyzers.CodeFixes.Tests;
 public sealed class UnionSwitchStatementCodeFixTests
 {
     [Fact]
+    public async ValueTask SwitchWithConditionalCompilation_HasNoFix()
+    {
+        // New sections could land inside an '#if' region and only exist in some build configurations.
+        await Verify.VerifyNoFixAsync("""
+            public readonly record struct NotFound;
+            public union Result(int, string, NotFound);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    [|switch|] (result)
+                    {
+                        case int:
+                            break;
+            #if !UNDEFINED_SYMBOL
+                        case string:
+                            break;
+            #endif
+                    }
+                }
+            }
+            """);
+    }
+
+    // PR #3 review: with the guard in front of the cases, inserting before it would duplicate existing labels.
+    [Fact]
+    public async ValueTask GuardBeforeCases_NewCasesGoAfterTheExistingOnes()
+    {
+        await Verify.VerifyAsync("""
+            using System;
+            using System.Diagnostics;
+
+            public readonly record struct NotFound;
+            public union Result(int, string, NotFound);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    [|switch|] (result)
+                    {
+                        default:
+                            throw new UnreachableException();
+                        case int:
+                            break;
+                    }
+                }
+            }
+            """, """
+            using System;
+            using System.Diagnostics;
+
+            public readonly record struct NotFound;
+            public union Result(int, string, NotFound);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    switch (result)
+                    {
+                        default:
+                            throw new UnreachableException();
+                        case int:
+                            break;
+                        case string:
+                            throw new NotImplementedException();
+                        case NotFound:
+                            throw new NotImplementedException();
+                    }
+                }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask GuardBetweenCases_NewCasesGoAfterTheLastCase()
+    {
+        await Verify.VerifyAsync("""
+            using System;
+            using System.Diagnostics;
+
+            public readonly record struct NotFound;
+            public union Result(int, string, NotFound);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    [|switch|] (result)
+                    {
+                        case string:
+                            break;
+                        default:
+                            throw new UnreachableException();
+                        case int:
+                            break;
+                    }
+                }
+            }
+            """, """
+            using System;
+            using System.Diagnostics;
+
+            public readonly record struct NotFound;
+            public union Result(int, string, NotFound);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    switch (result)
+                    {
+                        case string:
+                            break;
+                        default:
+                            throw new UnreachableException();
+                        case int:
+                            break;
+                        case NotFound:
+                            throw new NotImplementedException();
+                    }
+                }
+            }
+            """);
+    }
+
+    [Fact]
     public async ValueTask MissingCase_IsAdded()
     {
         await Verify.VerifyAsync("""

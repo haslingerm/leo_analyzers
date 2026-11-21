@@ -47,8 +47,14 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
                 continue;
             }
 
-            if (statement.Parent is ElseClauseSyntax { Parent: IfStatementSyntax ifWithEmptyElse })
+            if (statement.Parent is ElseClauseSyntax { Parent: IfStatementSyntax ifWithEmptyElse } elseClause)
             {
+                // Removing the clause would tear '#if'/'#else' apart from their '#endif' (or drop inactive code).
+                if (elseClause.ContainsDirectives)
+                {
+                    continue;
+                }
+
                 context.RegisterCodeFix(
                     CodeAction.Create("Remove empty else",
                         _ => Task.FromResult(context.Document.WithSyntaxRoot(RemoveElse(root, ifWithEmptyElse))),
@@ -56,7 +62,10 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
                     diagnostic);
             }
             else if (statement.Parent is IfStatementSyntax ifStatement && ifStatement.Statement == statement &&
-                     ifStatement.Else is { Statement: var elseStatement } && !IsEmpty(elseStatement) &&
+                     ifStatement.Else is { Statement: var elseStatement } invertedElse && !IsEmpty(elseStatement) &&
+                     // The empty body and the 'else' keyword are dropped: they must not carry directives.
+                     !statement.ContainsDirectives && !invertedElse.ElseKeyword.ContainsDirectives &&
+                     !(elseStatement is IfStatementSyntax && elseStatement.GetLeadingTrivia().Any(t => t.IsDirective)) &&
                      await IsBooleanAsync(context.Document, ifStatement.Condition, context.CancellationToken).ConfigureAwait(false))
             {
                 context.RegisterCodeFix(
@@ -74,16 +83,61 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
         // Comments in front of 'else' (e.g. after the closing brace) are kept.
         var keptTrivia = elseClause.ElseKeyword.LeadingTrivia.Where(IsComment).ToList();
         var newIf = ifStatement.WithElse(null);
-        if (keptTrivia.Count > 0)
+        var trailing = keptTrivia.Count > 0
+            ? newIf.GetTrailingTrivia().Where(t => !t.IsKind(SyntaxKind.EndOfLineTrivia))
+                   .Concat(keptTrivia.Prepend(SyntaxFactory.Space))
+                   .Concat(elseClause.GetTrailingTrivia())
+            : elseClause.GetTrailingTrivia();
+        newIf = newIf.WithTrailingTrivia(trailing);
+
+        return root.ReplaceNode(ifStatement, KeepEnclosingElseBinding(ifStatement, newIf));
+    }
+
+    /// <summary>
+    ///     The fixes turn an if-else into an if without else. If that if ends the then-branch of an enclosing if
+    ///     that has an else (possibly through loops, labels or else-if chains), the enclosing else would now bind
+    ///     to it instead: <c>if (a) if (b) X(); else { } else Y();</c>. In that case the result is wrapped in a block.
+    /// </summary>
+    private static StatementSyntax KeepEnclosingElseBinding(IfStatementSyntax original, IfStatementSyntax replacement)
+    {
+        if (!WouldCaptureEnclosingElse(original))
         {
-            newIf = newIf.WithTrailingTrivia(newIf.GetTrailingTrivia().AddRange(keptTrivia.Prepend(SyntaxFactory.Space)).Add(SyntaxFactory.ElasticCarriageReturnLineFeed));
-        }
-        else
-        {
-            newIf = newIf.WithTrailingTrivia(elseClause.GetTrailingTrivia());
+            return replacement.WithAdditionalAnnotations(Formatter.Annotation);
         }
 
-        return root.ReplaceNode(ifStatement, newIf.WithAdditionalAnnotations(Formatter.Annotation));
+        return SyntaxFactory.Block(replacement.WithoutLeadingTrivia().WithoutTrailingTrivia())
+                            .WithLeadingTrivia(replacement.GetLeadingTrivia())
+                            .WithTrailingTrivia(replacement.GetTrailingTrivia())
+                            .WithAdditionalAnnotations(Formatter.Annotation);
+    }
+
+    internal static bool WouldCaptureEnclosingElse(IfStatementSyntax ifStatement)
+    {
+        // Walk up through every construct whose embedded statement ends it: an else-less if at its end stays "open".
+        SyntaxNode current = ifStatement;
+        while (true)
+        {
+            switch (current.Parent)
+            {
+                case IfStatementSyntax enclosing when enclosing.Statement == current:
+                    if (enclosing.Else is not null)
+                    {
+                        return true;
+                    }
+
+                    current = enclosing;
+                    break;
+                case ElseClauseSyntax { Parent: IfStatementSyntax enclosing }:
+                    current = enclosing;
+                    break;
+                case WhileStatementSyntax or ForStatementSyntax or CommonForEachStatementSyntax or LockStatementSyntax
+                    or UsingStatementSyntax or FixedStatementSyntax or LabeledStatementSyntax:
+                    current = current.Parent;
+                    break;
+                default:
+                    return false;
+            }
+        }
     }
 
     private static SyntaxNode Invert(SyntaxNode root, IfStatementSyntax ifStatement, StatementSyntax elseStatement)
@@ -96,9 +150,14 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
             .WithCondition(Negate(ifStatement.Condition))
             .WithStatement(body)
             .WithElse(null)
-            .WithTrailingTrivia(ifStatement.GetTrailingTrivia())
-            .WithAdditionalAnnotations(Formatter.Annotation);
-        return root.ReplaceNode(ifStatement, newIf);
+            .WithTrailingTrivia(ifStatement.GetTrailingTrivia());
+        if (elseStatement is not IfStatementSyntax)
+        {
+            // Keep the else body's layout: the trivia after 'else' (line break or space) now follows ')'.
+            newIf = newIf.WithCloseParenToken(newIf.CloseParenToken.WithTrailingTrivia(ifStatement.Else!.ElseKeyword.TrailingTrivia));
+        }
+
+        return root.ReplaceNode(ifStatement, KeepEnclosingElseBinding(ifStatement, newIf));
     }
 
     internal static ExpressionSyntax Negate(ExpressionSyntax condition)

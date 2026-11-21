@@ -10,6 +10,196 @@ public sealed class EmptyIfOrElseClauseCodeFixTests
     private const string RemoveElse = EmptyIfOrElseClauseCodeFixProvider.RemoveElseKey;
     private const string InvertIf = EmptyIfOrElseClauseCodeFixProvider.InvertIfKey;
 
+    // PR #3 review: preprocessor directives must never be torn apart.
+    [Fact]
+    public async ValueTask ClausesContainingDirectives_HaveNoFix()
+    {
+        // Same shape as the analyzer test EmptyPreprocessorBranch_IsStillEmpty: '#if'/'#else' belong to the else
+        // clause, '#endif' to the next token, so removing the clause would leave an orphaned '#endif'.
+        await Verify.VerifyNoFixAsync("class C\n{\n    void M(bool b)\n    {\n" +
+                                      "        if (b)\n        [|{\n#if UNDEFINED_SYMBOL\n#endif\n        }|]\n" +
+                                      "        else\n#if UNDEFINED_SYMBOL\n#else\n            [|;|]\n#endif\n" +
+                                      "    }\n}\n");
+    }
+
+    [Fact]
+    public async ValueTask ElseInsideConditionalCompilation_HasNoFix()
+    {
+        await Verify.VerifyNoFixAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+            #if !UNDEFINED_SYMBOL
+                    else [|{ }|]
+            #endif
+                }
+
+                void Work() { }
+            }
+            """);
+    }
+
+    // PR #3 review: removing an else must not let an enclosing else bind to the now else-less if.
+    [Fact]
+    public async ValueTask RemovingElse_DoesNotCaptureEnclosingElse()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b)
+                            Work();
+                        else [|{ }|]
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                    {
+                        if (b)
+                            Work();
+                    }
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask RemovingElse_DoesNotCaptureEnclosingElse_ThroughLoopsAndElseChains()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b, bool c, bool x)
+                {
+                    if (a)
+                        while (c)
+                            if (x)
+                                Work();
+                            else if (b)
+                                Work();
+                            else [|{ }|]
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b, bool c, bool x)
+                {
+                    if (a)
+                        while (c)
+                            if (x)
+                                Work();
+                            else
+                            {
+                                if (b)
+                                    Work();
+                            }
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask InvertingIf_DoesNotCaptureEnclosingElse()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b) [|{ }|]
+                        else
+                            Work();
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                    {
+                        if (!b)
+                            Work();
+                    }
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, InvertIf);
+    }
+
+    [Fact]
+    public async ValueTask RemovingElse_WithoutEnclosingElse_AddsNoBlock()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b)
+                            Work();
+                        else [|{ }|]
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b)
+                            Work();
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+    }
+
     [Fact]
     public async ValueTask EmptyElseBlock_IsRemoved()
     {

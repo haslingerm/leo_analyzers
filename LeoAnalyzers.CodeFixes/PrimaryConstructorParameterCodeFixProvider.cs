@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Composition;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
@@ -9,6 +10,7 @@ using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Formatting;
 
@@ -65,6 +67,18 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
             if (references.Any(r => r is { InInitializer: true, InFunction: true }))
             {
                 // A lambda in an initializer captures the parameter; it cannot use an instance field instead.
+                continue;
+            }
+
+            if (IsMentionedInInactiveCode(parameter, context.CancellationToken))
+            {
+                // Uses in inactive '#if' branches cannot be found, so they would keep using the parameter.
+                continue;
+            }
+
+            if (await IsWrittenDuringConstructionAsync(solution, parameter, context.CancellationToken).ConfigureAwait(false))
+            {
+                // The new field's initializer runs first: members would see the value from before that write.
                 continue;
             }
 
@@ -220,6 +234,53 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
         }
 
         return result;
+    }
+
+    private static bool IsMentionedInInactiveCode(IParameterSymbol parameter, CancellationToken cancellationToken)
+    {
+        var word = new Regex($@"(?<![\p{{L}}\p{{Nd}}_@]){Regex.Escape(parameter.Name)}(?![\p{{L}}\p{{Nd}}_])");
+        return parameter.ContainingType.DeclaringSyntaxReferences.Any(declaration =>
+            declaration.GetSyntax(cancellationToken).DescendantTrivia()
+                       .Any(t => t.IsKind(SyntaxKind.DisabledTextTrivia) && word.IsMatch(t.ToString())));
+    }
+
+    /// <summary>
+    ///     Whether any declaration of the type writes the parameter (or passes it as a writable reference) during
+    ///     construction. Uses the LA0001 analyzer itself, so exactly the writes it knows about are considered.
+    /// </summary>
+    private static async Task<bool> IsWrittenDuringConstructionAsync(Solution solution, IParameterSymbol parameter,
+        CancellationToken cancellationToken)
+    {
+        var analyzer = ImmutableArray.Create<DiagnosticAnalyzer>(new PrimaryConstructorParameterMustBeReadOnlyAnalyzer());
+        foreach (var declaration in parameter.ContainingType.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(declaration.SyntaxTree);
+            var model = document is null ? null : await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+            var root = await declaration.SyntaxTree.GetRootAsync(cancellationToken).ConfigureAwait(false);
+            if (model is null)
+            {
+                // Without a model the writes cannot be checked: better no fix than a wrong one.
+                return true;
+            }
+
+            var withAnalyzer = model.Compilation.WithAnalyzers(analyzer,
+                new CompilationWithAnalyzersOptions(new AnalyzerOptions(ImmutableArray<AdditionalText>.Empty), null,
+                    concurrentAnalysis: false, logAnalyzerExecutionTime: false, reportSuppressedDiagnostics: false));
+            var diagnostics = await withAnalyzer.GetAnalyzerSemanticDiagnosticsAsync(model, declaration.Span, cancellationToken)
+                                                .ConfigureAwait(false);
+            foreach (var diagnostic in diagnostics)
+            {
+                var node = root.FindNode(diagnostic.Location.SourceSpan, getInnermostNodeForTie: true);
+                if (IsInInitializer(node) &&
+                    node.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>().Any(n =>
+                        SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(n, cancellationToken).Symbol, parameter)))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Whether the node runs during construction: in a field, event or property initializer, or in the base constructor call.</summary>

@@ -67,6 +67,15 @@ public sealed class UnionSwitchStatementCodeFixProvider : CodeFixProvider
     private static async Task<Document?> AddMissingCasesAsync(Document document, SwitchStatementSyntax switchStatement,
         CancellationToken cancellationToken)
     {
+        // With '#if' regions between the braces, a new section could end up inside a region and only exist in
+        // some build configurations.
+        var body = Microsoft.CodeAnalysis.Text.TextSpan.FromBounds(switchStatement.OpenBraceToken.SpanStart,
+            switchStatement.CloseBraceToken.Span.End);
+        if (switchStatement.DescendantTrivia(body).Any(t => t.IsDirective))
+        {
+            return null;
+        }
+
         var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
         var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
         if (model is null || root is null || UnionSymbols.GetCaseTypes is null ||
@@ -115,48 +124,48 @@ public sealed class UnionSwitchStatementCodeFixProvider : CodeFixProvider
         return await Simplifier.ReduceAsync(document, Simplifier.Annotation, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Adds the sections in front of a guard (<c>default: throw ...;</c>) or at the end, keeping only those that compile.</summary>
+    /// <summary>
+    ///     Adds the sections one by one after the last section that is not a guard (<c>default: throw ...;</c>), so a
+    ///     trailing guard stays last and no new section precedes an existing case. A section is only kept if the
+    ///     document does not get any additional error, wherever the compiler reports it: an already handled case
+    ///     can be reported on the existing label rather than on the new one.
+    /// </summary>
     private static async Task<Document> AddCompilingSectionsAsync(Document document, SyntaxAnnotation marker,
         IReadOnlyList<SwitchSectionSyntax> newSections, CancellationToken cancellationToken)
     {
-        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-        var switchStatement = Find(root!, marker);
-        var sections = switchStatement.Sections;
-        int insertAt = sections.Count;
-        for (int i = 0; i < sections.Count; i++)
+        int errors = await CountErrorsAsync(document, cancellationToken).ConfigureAwait(false);
+        foreach (var section in newSections)
         {
-            if (sections[i].Labels.Any(UnionSwitchCoverage.IsThrowOnlyCatchAll))
+            var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+            var switchStatement = Find(root!, marker);
+            var sections = switchStatement.Sections;
+            int insertAt = 0;
+            for (int i = sections.Count - 1; i >= 0; i--)
             {
-                insertAt = i;
-                break;
+                if (!sections[i].Labels.Any(UnionSwitchCoverage.IsThrowOnlyCatchAll))
+                {
+                    insertAt = i + 1;
+                    break;
+                }
+            }
+
+            var candidate = document.WithSyntaxRoot(root!.ReplaceNode(switchStatement,
+                switchStatement.WithSections(sections.Insert(insertAt, section))));
+            int candidateErrors = await CountErrorsAsync(candidate, cancellationToken).ConfigureAwait(false);
+            if (candidateErrors <= errors)
+            {
+                document = candidate;
+                errors = candidateErrors;
             }
         }
 
-        // Fresh annotation per call, so that only this call's sections are candidates for removal.
-        var candidate = new SyntaxAnnotation();
-        var annotated = newSections.Select(s => s.WithAdditionalAnnotations(candidate));
-        document = document.WithSyntaxRoot(root!.ReplaceNode(switchStatement, switchStatement.WithSections(sections.InsertRange(insertAt, annotated))));
+        return document;
+    }
 
-        while (true)
-        {
-            var currentRoot = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-            var currentModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-            var currentSwitch = Find(currentRoot!, marker);
-            var errors = currentModel!.GetDiagnostics(currentSwitch.Span, cancellationToken)
-                                      .Where(d => d.Severity == DiagnosticSeverity.Error)
-                                      .ToList();
-            var broken = currentRoot!.GetAnnotatedNodes(candidate)
-                                     .Where(s => errors.Any(e => s.Span.Contains(e.Location.SourceSpan)))
-                                     .ToList();
-            if (broken.Count == 0)
-            {
-                return document;
-            }
-
-            // Removing one section can make a later one valid again only in theory; removing all broken ones
-            // terminates because every round removes at least one candidate.
-            document = document.WithSyntaxRoot(currentRoot.RemoveNodes(broken, SyntaxRemoveOptions.KeepNoTrivia)!);
-        }
+    private static async Task<int> CountErrorsAsync(Document document, CancellationToken cancellationToken)
+    {
+        var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+        return model!.GetDiagnostics(cancellationToken: cancellationToken).Count(d => d.Severity == DiagnosticSeverity.Error);
     }
 
     private static async Task<bool> IsReportedAsync(Document document, SyntaxAnnotation marker, CancellationToken cancellationToken)

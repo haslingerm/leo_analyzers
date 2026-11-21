@@ -8,6 +8,123 @@ namespace LeoAnalyzers.CodeFixes.Tests;
 public sealed class PrimaryConstructorParameterCodeFixTests
 {
     [Fact]
+    public async ValueTask ParameterUsedInInactiveCode_HasNoFix()
+    {
+        // References in inactive '#if' branches are invisible to the rewrite and would keep using the parameter.
+        await Verify.VerifyNoFixAsync("""
+            class C(int value)
+            {
+                public void Set() => [|value|] = 1;
+            #if UNDEFINED_SYMBOL
+                public int Get() => value;
+            #endif
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask OtherInactiveCode_DoesNotBlockTheFix()
+    {
+        await Verify.VerifyAsync("""
+            class C(int value)
+            {
+                public void Set() => [|value|] = 1;
+            #if UNDEFINED_SYMBOL
+                public int Other() => 42;
+            #endif
+            }
+            """, """
+            class C(int value)
+            {
+                private int _value = value;
+
+                public void Set() => _value = 1;
+            #if UNDEFINED_SYMBOL
+                public int Other() => 42;
+            #endif
+            }
+            """);
+    }
+
+    // PR #3 review: the new field's initializer runs first, so a write to the parameter during construction
+    // (anywhere, not only at the selected diagnostic) would make members see a stale value.
+    [Fact]
+    public async ValueTask WriteInAnotherInitializer_MemberWriteHasNoFix()
+    {
+        await Verify.VerifyNoFixAsync("""
+            class C(int value)
+            {
+                private readonly int _initial = [|value|] = 1;
+
+                public void Set() => [|value|] = 2;
+                public int Get() => value;
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask RefArgumentInBaseCall_MemberWriteHasNoFix()
+    {
+        await Verify.VerifyNoFixAsync("""
+            class Base
+            {
+                public Base(ref int x) => x = 1;
+            }
+
+            class C(int value) : Base(ref [|value|])
+            {
+                public void Set() => [|value|] = 2;
+                public int Get() => value;
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask WriteDuringConstructionInOtherPart_MemberWriteHasNoFix()
+    {
+        var test = Verify.Create("", "");
+        test.TestState.Sources.Clear();
+        test.TestState.Sources.Add(("A.cs", """
+            partial class C(int value)
+            {
+                public void Set() => [|value|] = 2;
+            }
+            """));
+        test.TestState.Sources.Add(("B.cs", """
+            partial class C
+            {
+                private readonly int _next = [|value++|];
+            }
+            """));
+        test.FixedState.Sources.Clear();
+        test.FixedState.Sources.Add(test.TestState.Sources[0]);
+        test.FixedState.Sources.Add(test.TestState.Sources[1]);
+        test.FixedState.MarkupHandling = Microsoft.CodeAnalysis.Testing.MarkupMode.Allow;
+        await test.RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask ReadsDuringConstruction_DoNotBlockTheFix()
+    {
+        await Verify.VerifyAsync("""
+            class C(int value)
+            {
+                private readonly int _initial = value + 1;
+
+                public void Set() => [|value|] = 2;
+            }
+            """, """
+            class C(int value)
+            {
+                private int _value = value;
+                private readonly int _initial = value + 1;
+
+                public void Set() => _value = 2;
+            }
+            """);
+    }
+
+    [Fact]
     public async ValueTask Increment_IntroducesFieldAndRedirectsAllMemberUses()
     {
         await Verify.VerifyAsync("""
