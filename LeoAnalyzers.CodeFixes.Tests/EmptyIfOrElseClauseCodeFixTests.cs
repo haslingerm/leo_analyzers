@@ -1,0 +1,705 @@
+using System.Threading.Tasks;
+using Xunit;
+using Verify = LeoAnalyzers.CodeFixes.Tests.Verifier<LeoAnalyzers.EmptyIfOrElseClauseRequiresCommentAnalyzer,
+    LeoAnalyzers.CodeFixes.EmptyIfOrElseClauseCodeFixProvider>;
+
+namespace LeoAnalyzers.CodeFixes.Tests;
+
+public sealed class EmptyIfOrElseClauseCodeFixTests
+{
+    private const string RemoveElse = EmptyIfOrElseClauseCodeFixProvider.RemoveElseKey;
+    private const string InvertIf = EmptyIfOrElseClauseCodeFixProvider.InvertIfKey;
+
+    // Second review: comments in the removed parts must never be lost or moved into code.
+    [Fact]
+    public async ValueTask CommentBeforeElse_HasNoFix()
+    {
+        // Moving the comment would have put the following 'Work();' into it.
+        await Verify.VerifyNoFixAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+                    // nothing else to do
+                    else [|{ }|] Work();
+                }
+
+                void Work() { }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask CommentAfterElseKeyword_HasNoFix()
+    {
+        await Verify.VerifyNoFixAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+                    else // nothing to do here
+                    [|{ }|]
+                }
+
+                void Work() { }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask CommentAfterThenBranch_IsKept()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b, bool c)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    } // processed only for positive counts
+                    else [|{ }|]
+                    if (c) Work( 2 ); // second pass
+                    else [|{ }|]
+                }
+
+                void Work(int pass) { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b, bool c)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    } // processed only for positive counts
+                    if (c) Work( 2 ); // second pass
+                }
+
+                void Work(int pass) { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask CodeOnTheSameLineAfterRemovedElse_StaysCode()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b) Work(); else [|{ }|] Work();
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b) Work(); Work();
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Theory]
+    [InlineData("if (b) // handled by the caller\n            [|{ }|]\n            else\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ }|]\n            // b is false: do the work\n            else\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ /* nothing */ }|]\n            else\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ }|]\n            else /* not b */ if (c)\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ }|]\n            else\n            // only c\n            if (c)\n            {\n                Work();\n            }")]
+    public async ValueTask InvertWouldDropComments_HasNoFix(string statement)
+    {
+        if (statement.Contains("/* nothing */"))
+        {
+            // A comment inside the body makes it a non-empty clause: no diagnostic, nothing to fix.
+            statement = statement.Replace("[|", "").Replace("|]", "");
+        }
+
+        await Verify.VerifyNoFixAsync("class C\n{\n    void M(bool b, bool c)\n    {\n            " + statement +
+                                      "\n    }\n\n    void Work() { }\n}\n");
+    }
+
+    [Fact]
+    public async ValueTask UnrelatedFormatting_IsNotTouched()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    }
+                    else [|{ }|]
+                    Work( 2 );
+                }
+
+                void Work(int x) { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    }
+                    Work( 2 );
+                }
+
+                void Work(int x) { }
+            }
+            """, RemoveElse);
+    }
+
+    // PR #3 review: preprocessor directives must never be torn apart.
+    [Fact]
+    public async ValueTask ClausesContainingDirectives_HaveNoFix()
+    {
+        // Same shape as the analyzer test EmptyPreprocessorBranch_IsStillEmpty: '#if'/'#else' belong to the else
+        // clause, '#endif' to the next token, so removing the clause would leave an orphaned '#endif'.
+        await Verify.VerifyNoFixAsync("class C\n{\n    void M(bool b)\n    {\n" +
+                                      "        if (b)\n        [|{\n#if UNDEFINED_SYMBOL\n#endif\n        }|]\n" +
+                                      "        else\n#if UNDEFINED_SYMBOL\n#else\n            [|;|]\n#endif\n" +
+                                      "    }\n}\n");
+    }
+
+    [Fact]
+    public async ValueTask ElseInsideConditionalCompilation_HasNoFix()
+    {
+        await Verify.VerifyNoFixAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+            #if !UNDEFINED_SYMBOL
+                    else [|{ }|]
+            #endif
+                }
+
+                void Work() { }
+            }
+            """);
+    }
+
+    // PR #3 review: removing an else must not let an enclosing else bind to the now else-less if.
+    [Fact]
+    public async ValueTask RemovingElse_DoesNotCaptureEnclosingElse()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b)
+                            Work();
+                        else [|{ }|]
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                    {
+                        if (b)
+                            Work();
+                    }
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask RemovingElse_DoesNotCaptureEnclosingElse_ThroughLoopsAndElseChains()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b, bool c, bool x)
+                {
+                    if (a)
+                        while (c)
+                            if (x)
+                                Work();
+                            else if (b)
+                                Work();
+                            else [|{ }|]
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b, bool c, bool x)
+                {
+                    if (a)
+                        while (c)
+                            if (x)
+                                Work();
+                            else
+                            {
+                                if (b)
+                                    Work();
+                            }
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask InvertingIf_DoesNotCaptureEnclosingElse()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b) [|{ }|]
+                        else
+                            Work();
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                    {
+                        if (!b)
+                            Work();
+                    }
+                    else
+                        Other();
+                }
+
+                void Work() { }
+                void Other() { }
+            }
+            """, InvertIf);
+    }
+
+    [Fact]
+    public async ValueTask RemovingElse_WithoutEnclosingElse_AddsNoBlock()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b)
+                            Work();
+                        else [|{ }|]
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                        if (b)
+                            Work();
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask EmptyElseBlock_IsRemoved()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+                    else [|{ }|]
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask EmptyElseStatement_IsRemoved()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                        Work();
+                    else [|;|]
+                    Work();
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                        Work();
+                    Work();
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask EmptyElseOfElseIf_IsRemoved()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(int x)
+                {
+                    if (x > 0)
+                    {
+                        Work();
+                    }
+                    else if (x < 0)
+                    {
+                        Work();
+                    }
+                    else [|{ }|]
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(int x)
+                {
+                    if (x > 0)
+                    {
+                        Work();
+                    }
+                    else if (x < 0)
+                    {
+                        Work();
+                    }
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Theory]
+    [InlineData("b", "!b")]
+    [InlineData("!b", "b")]
+    [InlineData("a && b", "!(a && b)")]
+    [InlineData("a || b", "!(a || b)")]
+    [InlineData("x > 0.5", "!(x > 0.5)")]
+    [InlineData("x == 1", "!(x == 1)")]
+    [InlineData("o is string", "!(o is string)")]
+    [InlineData("IsReady()", "!IsReady()")]
+    [InlineData("Flags[0]", "!Flags[0]")]
+    [InlineData("(a)", "!(a)")]
+    [InlineData("a ? b : !b", "!(a ? b : !b)")]
+    public async ValueTask EmptyIf_IsInverted(string condition, string inverted)
+    {
+        // Comparisons are negated as a whole, never flipped: '!(x > 0.5)' and 'x <= 0.5' differ for NaN.
+        await Verify.VerifyAsync($$"""
+            class C
+            {
+                bool[] Flags = [true];
+
+                void M(bool a, bool b, double x, object o)
+                {
+                    if ({{condition}}) [|{ }|]
+                    else
+                    {
+                        Work();
+                    }
+                }
+
+                bool IsReady() => true;
+                void Work() { }
+            }
+            """, $$"""
+            class C
+            {
+                bool[] Flags = [true];
+
+                void M(bool a, bool b, double x, object o)
+                {
+                    if ({{inverted}})
+                    {
+                        Work();
+                    }
+                }
+
+                bool IsReady() => true;
+                void Work() { }
+            }
+            """, InvertIf);
+    }
+
+    [Fact]
+    public async ValueTask EmptyIfWithElseIf_ElseIfIsWrappedInBlock()
+    {
+        // Without the block, a following 'else' could bind to the wrong if.
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a) [|{ }|]
+                    else if (b)
+                    {
+                        Work();
+                    }
+                    else
+                    {
+                        Work();
+                    }
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (!a)
+                    {
+                        if (b)
+                        {
+                            Work();
+                        }
+                        else
+                        {
+                            Work();
+                        }
+                    }
+                }
+
+                void Work() { }
+            }
+            """, InvertIf);
+    }
+
+    [Fact]
+    public async ValueTask EmptyIfStatementWithElse_IsInverted()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b) [|;|]
+                    else Work();
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (!b) Work();
+                }
+
+                void Work() { }
+            }
+            """, InvertIf);
+    }
+
+    [Fact]
+    public async ValueTask EmptyIfWithoutElse_HasNoFix()
+    {
+        // The condition may have side effects, so the statement must not simply disappear.
+        await Verify.VerifyNoFixAsync("""
+            class C
+            {
+                void M()
+                {
+                    if (TryWork()) [|{ }|]
+                }
+
+                bool TryWork() => true;
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask EmptyIfWithUserDefinedTruth_HasNoFix()
+    {
+        // For types with operator true/false, '!' is not guaranteed to be the negation.
+        await Verify.VerifyNoFixAsync("""
+            class Tri
+            {
+                public static bool operator true(Tri t) => true;
+                public static bool operator false(Tri t) => true;
+            }
+
+            class C
+            {
+                void M(Tri t)
+                {
+                    if (t) [|{ }|]
+                    else
+                    {
+                        Work();
+                    }
+                }
+
+                void Work() { }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask BothEmpty_ElseIsRemoved_IfRemainsForAHuman()
+    {
+        var test = Verify.Create("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b) [|{ }|]
+                    else [|{ }|]
+                }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b) [|{ }|]
+                }
+            }
+            """, RemoveElse);
+        // The remaining empty if has no fix and is expected to stay reported.
+        test.FixedState.MarkupHandling = Microsoft.CodeAnalysis.Testing.MarkupMode.Allow;
+        await test.RunAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async ValueTask FixAll_RemovesEveryEmptyElse()
+    {
+        var test = Verify.Create("""
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                    {
+                        Work();
+                    }
+                    else [|{ }|]
+
+                    if (b)
+                    {
+                        Work();
+                    }
+                    else [|{ }|]
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool a, bool b)
+                {
+                    if (a)
+                    {
+                        Work();
+                    }
+
+                    if (b)
+                    {
+                        Work();
+                    }
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+        test.NumberOfFixAllIterations = 1;
+        await test.RunAsync(TestContext.Current.CancellationToken);
+    }
+}

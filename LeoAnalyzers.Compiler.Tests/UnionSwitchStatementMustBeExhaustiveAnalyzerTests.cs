@@ -37,9 +37,57 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzerTests
     [InlineData("case object anything: break;", false)]
     [InlineData("default: break;", false)]
     [InlineData("default: break; case int: break;", false)]
+    // A catch-all section that only throws is a guard, not coverage: the cases are still checked.
+    [InlineData("default: throw new System.InvalidOperationException();", true)]
+    [InlineData("case int: break; default: throw new System.InvalidOperationException();", true)]
+    [InlineData("case int: break; case string: break; default: throw new System.InvalidOperationException();", false)]
+    [InlineData("default: throw new System.InvalidOperationException(); case int: break; case string: break;", false)]
+    [InlineData("case int: break; default: { throw new System.InvalidOperationException(); }", true)]
+    [InlineData("case int: break; default: { { throw new System.InvalidOperationException(); } }", true)]
+    [InlineData("case int: break; case var x: throw new System.InvalidOperationException();", true)]
+    [InlineData("case int: break; case var _: throw new System.InvalidOperationException();", true)]
+    [InlineData("case int: break; case (var x): throw new System.InvalidOperationException();", true)]
+    [InlineData("case int: break; case string: case var x: throw new System.InvalidOperationException();", false)]
+    [InlineData("case int: break; case string: default: throw new System.InvalidOperationException();", false)]
+    [InlineData("case string: default: throw new System.InvalidOperationException();", true)]
+    // Anything else in a catch-all section still handles the remaining values on purpose.
+    [InlineData("case int: break; default: System.GC.KeepAlive(value); throw new System.InvalidOperationException();", false)]
+    [InlineData("case int: break; default: { System.GC.KeepAlive(value); throw new System.InvalidOperationException(); }", false)]
+    [InlineData("case int: break; default: return;", false)]
+    [InlineData("case int: break; case var x when true: throw new System.InvalidOperationException();", false)]
+    // Mirrors the compiler: a bare "object" type pattern does not cover a union's null Value (CS8655),
+    // while the declaration pattern "object o" does. Pinned so that a compiler change is noticed.
+    [InlineData("case int: break; case object: throw new System.InvalidOperationException();", true)]
+    [InlineData("case int: break; case object: break;", true)]
+    [InlineData("case int: break; case object o: break;", false)]
     public async ValueTask UnionPatterns(string cases, bool expectDiagnostic)
     {
         await VerifyAsync(UnionSource(cases), expectDiagnostic ? 1 : 0);
+    }
+
+    [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
+    [InlineData("case int i: return i; case string s: return s.Length; default: throw new System.Diagnostics.UnreachableException();", 0)]
+    [InlineData("case int i: return i; default: throw new System.Diagnostics.UnreachableException();", 1)]
+    [InlineData("case int i: result = i; break; case string s: result = s.Length; break; default: throw new System.Diagnostics.UnreachableException();", 0)]
+    [InlineData("case int i: result = i; break; default: throw new System.Diagnostics.UnreachableException();", 1)]
+    public async ValueTask ThrowOnlyDefaultGuardsValueReturningSwitchStatements(string cases, int expectedCount)
+    {
+        // Without the guard, a complete switch statement does not satisfy flow analysis (CS0161/CS0165).
+        var source = $$"""
+            #nullable enable
+            public union Result(int, string);
+            class C
+            {
+                int M(Result value)
+                {
+                    int result;
+                    switch (value) { {{cases}} }
+                    return result;
+                }
+            }
+            """;
+        source = cases.Contains("result =") ? source : source.Replace("int result;", "").Replace("return result;", "");
+        await VerifyAsync(source, expectedCount);
     }
 
     [Theory(SkipUnless = nameof(SupportsUnions), Skip = RequiresUnions)]
@@ -59,6 +107,10 @@ public sealed class UnionSwitchStatementMustBeExhaustiveAnalyzerTests
     [InlineData("case int: break; case string: break; case null: break;", "Result?", true)]
     [InlineData("case int: break; case string: break; case null when true: break;", "Result?", false)]
     [InlineData("case var anything: break;", "Result?", true)]
+    [InlineData("case int: break; default: throw new System.Exception();", "Result", false)]
+    [InlineData("case int: break; case string: break; default: throw new System.Exception();", "Result", true)]
+    [InlineData("case int: break; case var x: throw new System.Exception();", "Result", false)]
+    [InlineData("case int: break; default: System.GC.KeepAlive(value); throw new System.Exception();", "Result", true)]
     public void FastProofOnlyAcceptsCertainCoverage(string cases, string inputType, bool expected)
     {
         var compilation = CreateCompilation(UnionSource(cases, inputType));

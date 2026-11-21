@@ -2,7 +2,8 @@
 
     <PropertyGroup>
         <TargetFramework>netstandard2.0</TargetFramework>
-        <IsPackable>true</IsPackable>
+        <!-- Packed together with the code fixes by LeoAnalyzers.Package. -->
+        <IsPackable>false</IsPackable>
         <Nullable>enable</Nullable>
         <LangVersion>latest</LangVersion>
 
@@ -11,10 +12,6 @@
 
         <RootNamespace>LeoAnalyzers</RootNamespace>
         <AssemblyName>LeoAnalyzers</AssemblyName>
-
-        <IncludeBuildOutput>false</IncludeBuildOutput>
-        <PackageType>Analyzer</PackageType>
-        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
     </PropertyGroup>
 
     <ItemGroup>
@@ -27,35 +24,11 @@
         </PackageReference>
     </ItemGroup>
 
-    <PropertyGroup>
-        <Title>HTL Leonding Code Analyzers</Title>
-        <Description>Contains Roslyn analyzers to enforce solid and safe code design and conventions</Description>
-        <PackageId>HTLLeonding.Utility.LeoAnalyzers</PackageId>
-        <PackageReadmeFile>Readme.md</PackageReadmeFile>
-        <PackageType>Dependency</PackageType>
-        <Version>1.2.1</Version>
-        <Authors>M. Haslinger</Authors>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageTags>HTL-Leonding;roslyn;analyzer</PackageTags>
-        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-        <RepositoryType>git</RepositoryType>
-        <RepositoryUrl>https://github.com/markushaslinger/leo_analyzers</RepositoryUrl>
-    </PropertyGroup>
-
-    <Target Name="AddAnalyzersToPackage" AfterTargets="Build" Condition="'$(IsPackable)' == 'True'">
-        <ItemGroup>
-            <Analyzer Include="$(OutputPath)\LeoAnalyzers.dll"/>
-            <None Include="$(MSBuildThisFileDirectory)\bin\Release\netstandard2.0\LeoAnalyzers.dll" Pack="true" PackagePath="analyzers/dotnet/roslyn4.10/cs/"/>
-        </ItemGroup>
-    </Target>
-
     <ItemGroup>
         <InternalsVisibleTo Include="LeoAnalyzers.Compiler.Tests" />
-        <Content Include="AnalyzerReleases.Shipped.md">
-            <Pack>true</Pack>
-            <PackagePath>docs</PackagePath>
-        </Content>
-        <None Include="../Readme.md" Pack="true" PackagePath=""/>
+        <InternalsVisibleTo Include="LeoAnalyzers.CodeFixes" />
+        <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+        <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
     </ItemGroup>
 
 </Project>

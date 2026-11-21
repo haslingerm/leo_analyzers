@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Packs the analyzers and their code fixes into one NuGet package. -->
+    <PropertyGroup>
+        <TargetFramework>netstandard2.0</TargetFramework>
+        <IsPackable>true</IsPackable>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+        <!-- The package has no lib folder on purpose. -->
+        <NoWarn>$(NoWarn);NU5128</NoWarn>
+        <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);AddAnalyzersToPackage</TargetsForTfmSpecificContentInPackage>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <Title>HTL Leonding Code Analyzers</Title>
+        <Description>Contains Roslyn analyzers and code fixes to enforce solid and safe code design and conventions</Description>
+        <PackageId>HTLLeonding.Utility.LeoAnalyzers</PackageId>
+        <PackageReadmeFile>Readme.md</PackageReadmeFile>
+        <PackageType>Dependency</PackageType>
+        <Authors>M. Haslinger</Authors>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageTags>HTL-Leonding;roslyn;analyzer;codefix</PackageTags>
+        <RepositoryType>git</RepositoryType>
+        <RepositoryUrl>https://github.com/haslingerm/leo_analyzers</RepositoryUrl>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\LeoAnalyzers\LeoAnalyzers.csproj" />
+        <ProjectReference Include="..\LeoAnalyzers.CodeFixes\LeoAnalyzers.CodeFixes.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="../Readme.md" Pack="true" PackagePath="" />
+        <None Include="../LeoAnalyzers/AnalyzerReleases.Shipped.md" Pack="true" PackagePath="docs" />
+    </ItemGroup>
+
+    <!-- The folder names the Roslyn version the assemblies are compiled against (Microsoft.CodeAnalysis 4.12):
+         older hosts skip them instead of failing to load them (CS9057). -->
+    <Target Name="AddAnalyzersToPackage">
+        <ItemGroup>
+            <TfmSpecificPackageFile Include="$(OutputPath)LeoAnalyzers.dll" PackagePath="analyzers/dotnet/roslyn4.12/cs" />
+            <TfmSpecificPackageFile Include="$(OutputPath)LeoAnalyzers.CodeFixes.dll" PackagePath="analyzers/dotnet/roslyn4.12/cs" />
+        </ItemGroup>
+    </Target>
+
+</Project>
