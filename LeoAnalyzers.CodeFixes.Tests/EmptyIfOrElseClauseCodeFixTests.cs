@@ -10,6 +10,165 @@ public sealed class EmptyIfOrElseClauseCodeFixTests
     private const string RemoveElse = EmptyIfOrElseClauseCodeFixProvider.RemoveElseKey;
     private const string InvertIf = EmptyIfOrElseClauseCodeFixProvider.InvertIfKey;
 
+    // Second review: comments in the removed parts must never be lost or moved into code.
+    [Fact]
+    public async ValueTask CommentBeforeElse_HasNoFix()
+    {
+        // Moving the comment would have put the following 'Work();' into it.
+        await Verify.VerifyNoFixAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+                    // nothing else to do
+                    else [|{ }|] Work();
+                }
+
+                void Work() { }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask CommentAfterElseKeyword_HasNoFix()
+    {
+        await Verify.VerifyNoFixAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work();
+                    }
+                    else // nothing to do here
+                    [|{ }|]
+                }
+
+                void Work() { }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask CommentAfterThenBranch_IsKept()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b, bool c)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    } // processed only for positive counts
+                    else [|{ }|]
+                    if (c) Work( 2 ); // second pass
+                    else [|{ }|]
+                }
+
+                void Work(int pass) { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b, bool c)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    } // processed only for positive counts
+                    if (c) Work( 2 ); // second pass
+                }
+
+                void Work(int pass) { }
+            }
+            """, RemoveElse);
+    }
+
+    [Fact]
+    public async ValueTask CodeOnTheSameLineAfterRemovedElse_StaysCode()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b) Work(); else [|{ }|] Work();
+                }
+
+                void Work() { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b) Work(); Work();
+                }
+
+                void Work() { }
+            }
+            """, RemoveElse);
+    }
+
+    [Theory]
+    [InlineData("if (b) // handled by the caller\n            [|{ }|]\n            else\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ }|]\n            // b is false: do the work\n            else\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ /* nothing */ }|]\n            else\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ }|]\n            else /* not b */ if (c)\n            {\n                Work();\n            }")]
+    [InlineData("if (b) [|{ }|]\n            else\n            // only c\n            if (c)\n            {\n                Work();\n            }")]
+    public async ValueTask InvertWouldDropComments_HasNoFix(string statement)
+    {
+        if (statement.Contains("/* nothing */"))
+        {
+            // A comment inside the body makes it a non-empty clause: no diagnostic, nothing to fix.
+            statement = statement.Replace("[|", "").Replace("|]", "");
+        }
+
+        await Verify.VerifyNoFixAsync("class C\n{\n    void M(bool b, bool c)\n    {\n            " + statement +
+                                      "\n    }\n\n    void Work() { }\n}\n");
+    }
+
+    [Fact]
+    public async ValueTask UnrelatedFormatting_IsNotTouched()
+    {
+        await Verify.VerifyAsync("""
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    }
+                    else [|{ }|]
+                    Work( 2 );
+                }
+
+                void Work(int x) { }
+            }
+            """, """
+            class C
+            {
+                void M(bool b)
+                {
+                    if (b)
+                    {
+                        Work( 1 );
+                    }
+                    Work( 2 );
+                }
+
+                void Work(int x) { }
+            }
+            """, RemoveElse);
+    }
+
     // PR #3 review: preprocessor directives must never be torn apart.
     [Fact]
     public async ValueTask ClausesContainingDirectives_HaveNoFix()

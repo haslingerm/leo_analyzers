@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Composition;
 using System.Linq;
@@ -49,8 +50,9 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
 
             if (statement.Parent is ElseClauseSyntax { Parent: IfStatementSyntax ifWithEmptyElse } elseClause)
             {
-                // Removing the clause would tear '#if'/'#else' apart from their '#endif' (or drop inactive code).
-                if (elseClause.ContainsDirectives)
+                // The whole clause is removed: it must not carry comments (an explanation, or a comment that would
+                // swallow following code if moved) or directives (removing '#if'/'#else' orphans their '#endif').
+                if (HasCommentsOrDirectives(elseClause.DescendantTrivia()))
                 {
                     continue;
                 }
@@ -63,9 +65,7 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
             }
             else if (statement.Parent is IfStatementSyntax ifStatement && ifStatement.Statement == statement &&
                      ifStatement.Else is { Statement: var elseStatement } invertedElse && !IsEmpty(elseStatement) &&
-                     // The empty body and the 'else' keyword are dropped: they must not carry directives.
-                     !statement.ContainsDirectives && !invertedElse.ElseKeyword.ContainsDirectives &&
-                     !(elseStatement is IfStatementSyntax && elseStatement.GetLeadingTrivia().Any(t => t.IsDirective)) &&
+                     !HasCommentsOrDirectives(RemovedByInvert(ifStatement, invertedElse)) &&
                      await IsBooleanAsync(context.Document, ifStatement.Condition, context.CancellationToken).ConfigureAwait(false))
             {
                 context.RegisterCodeFix(
@@ -80,18 +80,33 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
     private static SyntaxNode RemoveElse(SyntaxNode root, IfStatementSyntax ifStatement)
     {
         var elseClause = ifStatement.Else!;
-        // Comments in front of 'else' (e.g. after the closing brace) are kept.
-        var keptTrivia = elseClause.ElseKeyword.LeadingTrivia.Where(IsComment).ToList();
         var newIf = ifStatement.WithElse(null);
-        var trailing = keptTrivia.Count > 0
-            ? newIf.GetTrailingTrivia().Where(t => !t.IsKind(SyntaxKind.EndOfLineTrivia))
-                   .Concat(keptTrivia.Prepend(SyntaxFactory.Space))
-                   .Concat(elseClause.GetTrailingTrivia())
-            : elseClause.GetTrailingTrivia();
-        newIf = newIf.WithTrailingTrivia(trailing);
+
+        // The then-branch's trailing trivia (e.g. '} // explanation') is kept. Only when it does not end the line,
+        // the line continues as after the else clause (e.g. 'if (b) Work(); else { } Next();').
+        var thenTrailing = newIf.GetTrailingTrivia();
+        if (!thenTrailing.Any(t => t.IsKind(SyntaxKind.EndOfLineTrivia)))
+        {
+            newIf = newIf.WithTrailingTrivia(HasCommentsOrDirectives(thenTrailing)
+                ? thenTrailing.AddRange(elseClause.GetTrailingTrivia())
+                : elseClause.GetTrailingTrivia());
+        }
 
         return root.ReplaceNode(ifStatement, KeepEnclosingElseBinding(ifStatement, newIf));
     }
+
+    /// <summary>The trivia that inverting drops or moves: around the empty body and the 'else' keyword.</summary>
+    private static IEnumerable<SyntaxTrivia> RemovedByInvert(IfStatementSyntax ifStatement, ElseClauseSyntax elseClause)
+    {
+        var removed = ifStatement.CloseParenToken.TrailingTrivia
+                                 .Concat(ifStatement.Statement.DescendantTrivia())
+                                 .Concat(elseClause.ElseKeyword.LeadingTrivia)
+                                 .Concat(elseClause.ElseKeyword.TrailingTrivia);
+        return elseClause.Statement is IfStatementSyntax elseIf ? removed.Concat(elseIf.GetLeadingTrivia()) : removed;
+    }
+
+    private static bool HasCommentsOrDirectives(IEnumerable<SyntaxTrivia> trivia) =>
+        trivia.Any(t => t.IsDirective || IsComment(t) || t.IsKind(SyntaxKind.DisabledTextTrivia));
 
     /// <summary>
     ///     The fixes turn an if-else into an if without else. If that if ends the then-branch of an enclosing if
@@ -102,9 +117,11 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
     {
         if (!WouldCaptureEnclosingElse(original))
         {
-            return replacement.WithAdditionalAnnotations(Formatter.Annotation);
+            // The user's code keeps its formatting; only newly built syntax is formatted.
+            return replacement;
         }
 
+        // The wrapped if moves one level deeper, so the new block is formatted (including its re-indented content).
         return SyntaxFactory.Block(replacement.WithoutLeadingTrivia().WithoutTrailingTrivia())
                             .WithLeadingTrivia(replacement.GetLeadingTrivia())
                             .WithTrailingTrivia(replacement.GetTrailingTrivia())
@@ -144,7 +161,7 @@ public sealed class EmptyIfOrElseClauseCodeFixProvider : CodeFixProvider
     {
         // An else-if becomes the body of the inverted if; a block keeps a dangling else from changing its meaning.
         var body = elseStatement is IfStatementSyntax
-            ? SyntaxFactory.Block(elseStatement.WithoutLeadingTrivia())
+            ? SyntaxFactory.Block(elseStatement.WithoutLeadingTrivia()).WithAdditionalAnnotations(Formatter.Annotation)
             : elseStatement;
         var newIf = ifStatement
             .WithCondition(Negate(ifStatement.Condition))

@@ -34,10 +34,12 @@
         <None Include="../LeoAnalyzers/AnalyzerReleases.Shipped.md" Pack="true" PackagePath="docs" />
     </ItemGroup>
 
+    <!-- The folder names the Roslyn version the assemblies are compiled against (Microsoft.CodeAnalysis 4.12):
+         older hosts skip them instead of failing to load them (CS9057). -->
     <Target Name="AddAnalyzersToPackage">
         <ItemGroup>
-            <TfmSpecificPackageFile Include="$(OutputPath)LeoAnalyzers.dll" PackagePath="analyzers/dotnet/roslyn4.10/cs" />
-            <TfmSpecificPackageFile Include="$(OutputPath)LeoAnalyzers.CodeFixes.dll" PackagePath="analyzers/dotnet/roslyn4.10/cs" />
+            <TfmSpecificPackageFile Include="$(OutputPath)LeoAnalyzers.dll" PackagePath="analyzers/dotnet/roslyn4.12/cs" />
+            <TfmSpecificPackageFile Include="$(OutputPath)LeoAnalyzers.CodeFixes.dll" PackagePath="analyzers/dotnet/roslyn4.12/cs" />
         </ItemGroup>
     </Target>
 

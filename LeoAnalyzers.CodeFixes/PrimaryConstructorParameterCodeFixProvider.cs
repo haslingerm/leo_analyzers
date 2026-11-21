@@ -13,6 +13,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace LeoAnalyzers.CodeFixes;
 
@@ -76,7 +77,7 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
                 continue;
             }
 
-            if (await IsWrittenDuringConstructionAsync(solution, parameter, context.CancellationToken).ConfigureAwait(false))
+            if (await IsWrittenDuringConstructionAsync(solution, references, context.CancellationToken).ConfigureAwait(false))
             {
                 // The new field's initializer runs first: members would see the value from before that write.
                 continue;
@@ -150,7 +151,8 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
     {
         var references = await FindReferencesAsync(solution, parameter, cancellationToken).ConfigureAwait(false);
         var declaringDocumentId = solution.GetDocumentId(typeDeclaration.SyntaxTree)!;
-        var replacedByDocument = references.Where(r => !r.InInitializer)
+        // 'nameof(count)' keeps naming the parameter: it still exists, and messages/ParamName stay the same.
+        var replacedByDocument = references.Where(r => r is { InInitializer: false, InNameof: false })
                                            .GroupBy(r => r.DocumentId)
                                            .ToDictionary(g => g.Key, g => g.Select(r => r.Node).ToList());
         if (!replacedByDocument.ContainsKey(declaringDocumentId))
@@ -207,9 +209,13 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
                              .WithCloseBraceToken(SyntaxFactory.Token(SyntaxKind.CloseBraceToken)
                                                                .WithTrailingTrivia(type.SemicolonToken.TrailingTrivia))
                              .WithSemicolonToken(default);
+
+            // The new body has no layout yet; it only contains the new field.
+            return newType.WithAdditionalAnnotations(Formatter.Annotation);
         }
 
-        return newType.WithAdditionalAnnotations(Formatter.Annotation);
+        // Only the new field is formatted; the rest of the type keeps the user's formatting.
+        return newType;
     }
 
     private static async Task<IReadOnlyList<ParameterReference>> FindReferencesAsync(Solution solution, IParameterSymbol parameter,
@@ -229,7 +235,18 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
                 bool inInitializer = IsInInitializer(node);
                 bool inFunction = node.Ancestors().TakeWhile(a => a is not TypeDeclarationSyntax)
                                       .Any(a => a is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
-                result.Add(new ParameterReference(location.Document.Id, node, inInitializer, inFunction));
+                bool inNameof = false;
+                foreach (var invocation in node.Ancestors().OfType<InvocationExpressionSyntax>())
+                {
+                    if (invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" })
+                    {
+                        var model = await location.Document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+                        inNameof = model?.GetOperation(invocation, cancellationToken) is INameOfOperation;
+                        break;
+                    }
+                }
+
+                result.Add(new ParameterReference(location.Document.Id, node, inInitializer, inFunction, inNameof));
             }
         }
 
@@ -245,42 +262,48 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
     }
 
     /// <summary>
-    ///     Whether any declaration of the type writes the parameter (or passes it as a writable reference) during
-    ///     construction. Uses the LA0001 analyzer itself, so exactly the writes it knows about are considered.
+    ///     Whether any reference to the parameter that runs during construction (initializers, base call) writes it
+    ///     or passes it as a writable reference. Checked on the references themselves, so it is independent of
+    ///     suppressions (<c>#pragma</c>), generated code and anything else that hides LA0001 diagnostics.
     /// </summary>
-    private static async Task<bool> IsWrittenDuringConstructionAsync(Solution solution, IParameterSymbol parameter,
+    private static async Task<bool> IsWrittenDuringConstructionAsync(Solution solution, IReadOnlyList<ParameterReference> references,
         CancellationToken cancellationToken)
     {
-        var analyzer = ImmutableArray.Create<DiagnosticAnalyzer>(new PrimaryConstructorParameterMustBeReadOnlyAnalyzer());
-        foreach (var declaration in parameter.ContainingType.DeclaringSyntaxReferences)
+        foreach (var reference in references.Where(r => r.InInitializer))
         {
-            var document = solution.GetDocument(declaration.SyntaxTree);
+            var document = solution.GetDocument(reference.DocumentId);
             var model = document is null ? null : await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-            var root = await declaration.SyntaxTree.GetRootAsync(cancellationToken).ConfigureAwait(false);
-            if (model is null)
+            // Without an operation the use cannot be classified: better no fix than a wrong one.
+            if (model?.GetOperation(reference.Node, cancellationToken) is not { } operation || IsWrite(operation))
             {
-                // Without a model the writes cannot be checked: better no fix than a wrong one.
                 return true;
-            }
-
-            var withAnalyzer = model.Compilation.WithAnalyzers(analyzer,
-                new CompilationWithAnalyzersOptions(new AnalyzerOptions(ImmutableArray<AdditionalText>.Empty), null,
-                    concurrentAnalysis: false, logAnalyzerExecutionTime: false, reportSuppressedDiagnostics: false));
-            var diagnostics = await withAnalyzer.GetAnalyzerSemanticDiagnosticsAsync(model, declaration.Span, cancellationToken)
-                                                .ConfigureAwait(false);
-            foreach (var diagnostic in diagnostics)
-            {
-                var node = root.FindNode(diagnostic.Location.SourceSpan, getInnermostNodeForTie: true);
-                if (IsInInitializer(node) &&
-                    node.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>().Any(n =>
-                        SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(n, cancellationToken).Symbol, parameter)))
-                {
-                    return true;
-                }
             }
         }
 
         return false;
+    }
+
+    private static bool IsWrite(IOperation operation)
+    {
+        var current = operation;
+        while (true)
+        {
+            switch (current.Parent)
+            {
+                // (p, q) = ...  and  ref (c ? ref p : ref q): the write targets the enclosing operation.
+                case ITupleOperation or IConditionalOperation { IsRef: true }:
+                    current = current.Parent;
+                    break;
+                case IAssignmentOperation assignment:
+                    return assignment.Target == current;
+                case IIncrementOrDecrementOperation:
+                    return true;
+                case IArgumentOperation argument:
+                    return argument.Parameter?.RefKind is RefKind.Ref or RefKind.Out;
+                default:
+                    return false;
+            }
+        }
     }
 
     /// <summary>Whether the node runs during construction: in a field, event or property initializer, or in the base constructor call.</summary>
@@ -290,11 +313,13 @@ public sealed class PrimaryConstructorParameterCodeFixProvider : CodeFixProvider
                 or EqualsValueClauseSyntax { Parent: PropertyDeclarationSyntax }
                 or PrimaryConstructorBaseTypeSyntax);
 
-    private sealed class ParameterReference(DocumentId documentId, IdentifierNameSyntax node, bool inInitializer, bool inFunction)
+    private sealed class ParameterReference(DocumentId documentId, IdentifierNameSyntax node, bool inInitializer,
+        bool inFunction, bool inNameof)
     {
         public DocumentId DocumentId { get; } = documentId;
         public IdentifierNameSyntax Node { get; } = node;
         public bool InInitializer { get; } = inInitializer;
         public bool InFunction { get; } = inFunction;
+        public bool InNameof { get; } = inNameof;
     }
 }

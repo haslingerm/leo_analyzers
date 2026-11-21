@@ -7,6 +7,144 @@ namespace LeoAnalyzers.CodeFixes.Tests;
 
 public sealed class UnionSwitchStatementCodeFixTests
 {
+    // Second review: case types whose short label does not compile fall back to a type-only pattern.
+    [Fact]
+    public async ValueTask CaseTypeShadowedByMember_UsesTypeOnlyPattern()
+    {
+        await Verify.VerifyAsync("""
+            using System;
+
+            public sealed class Circle;
+            public sealed class Square;
+            public union Shape(Circle, Square);
+
+            class C
+            {
+                public Circle Circle { get; } = new();
+
+                void M(Shape shape)
+                {
+                    [|switch|] (shape)
+                    {
+                        case Square:
+                            break;
+                    }
+                }
+            }
+            """, """
+            using System;
+
+            public sealed class Circle;
+            public sealed class Square;
+            public union Shape(Circle, Square);
+
+            class C
+            {
+                public Circle Circle { get; } = new();
+
+                void M(Shape shape)
+                {
+                    switch (shape)
+                    {
+                        case Square:
+                            break;
+                        case Circle _:
+                            throw new NotImplementedException();
+                    }
+                }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask ConstantNamedLikeCaseType_IsNotMistakenForTheType()
+    {
+        // 'case Square:' would compile as the constant pattern 1 (an int case); the type has to be qualified.
+        await Verify.VerifyAsync("""
+            using System;
+
+            public sealed class Square;
+            public union Shape(int, Square);
+
+            class C
+            {
+                const int Square = 1;
+
+                void M(Shape shape)
+                {
+                    [|switch|] (shape)
+                    {
+                        case int:
+                            break;
+                    }
+                }
+            }
+            """, """
+            using System;
+
+            public sealed class Square;
+            public union Shape(int, Square);
+
+            class C
+            {
+                const int Square = 1;
+
+                void M(Shape shape)
+                {
+                    switch (shape)
+                    {
+                        case int:
+                            break;
+                        case global::Square:
+                            throw new NotImplementedException();
+                    }
+                }
+            }
+            """);
+    }
+
+    [Fact]
+    public async ValueTask TupleCaseType_UsesTypeOnlyPattern()
+    {
+        await Verify.VerifyAsync("""
+            using System;
+
+            public readonly record struct NotFound;
+            public union Result((int, string), NotFound);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    [|switch|] (result)
+                    {
+                        case NotFound:
+                            break;
+                    }
+                }
+            }
+            """, """
+            using System;
+
+            public readonly record struct NotFound;
+            public union Result((int, string), NotFound);
+
+            class C
+            {
+                void M(Result result)
+                {
+                    switch (result)
+                    {
+                        case NotFound:
+                            break;
+                        case ValueTuple<int, string> _:
+                            throw new NotImplementedException();
+                    }
+                }
+            }
+            """);
+    }
+
     [Fact]
     public async ValueTask SwitchWithConditionalCompilation_HasNoFix()
     {

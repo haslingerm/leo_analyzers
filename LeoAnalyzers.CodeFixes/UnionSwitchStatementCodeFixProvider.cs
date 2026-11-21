@@ -11,6 +11,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Formatting;
+using Microsoft.CodeAnalysis.Operations;
 using Microsoft.CodeAnalysis.Simplification;
 
 namespace LeoAnalyzers.CodeFixes;
@@ -84,7 +85,7 @@ public sealed class UnionSwitchStatementCodeFixProvider : CodeFixProvider
             return null;
         }
 
-        var typeCases = new List<SwitchSectionSyntax>();
+        var typeCases = new List<Candidate>();
         var seen = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
         foreach (var caseType in UnionSymbols.GetCaseTypes(unionType))
         {
@@ -97,7 +98,14 @@ public sealed class UnionSwitchStatementCodeFixProvider : CodeFixProvider
                 continue;
             }
 
-            typeCases.Add(Section(ParseCaseLabel(patternType.ToMinimalDisplayString(model, switchStatement.SpanStart))));
+            // 'case Circle:' is the natural form. It does not work if a member shadows the type name (then it binds
+            // to the member) or for tuple types (a positional pattern). 'case Circle _:' is a type-only pattern.
+            // Tuple syntax would be a positional pattern ('case (int, string) _:'), so tuples are spelled ValueTuple<...>.
+            string minimal = patternType.ToMinimalDisplayString(model, switchStatement.SpanStart);
+            string expanded = patternType.ToMinimalDisplayString(model, switchStatement.SpanStart, ExpandedTuples(SymbolDisplayFormat.MinimallyQualifiedFormat));
+            string qualified = patternType.ToDisplayString(ExpandedTuples(SymbolDisplayFormat.FullyQualifiedFormat));
+            var labels = new List<string> { minimal, minimal + " _", expanded + " _", qualified + " _" };
+            typeCases.Add(new Candidate(patternType, labels.Distinct().Select(l => Section(ParseCaseLabel(l))).ToList()));
         }
 
         var marker = new SyntaxAnnotation();
@@ -106,7 +114,7 @@ public sealed class UnionSwitchStatementCodeFixProvider : CodeFixProvider
 
         if (await IsReportedAsync(document, marker, cancellationToken).ConfigureAwait(false))
         {
-            var nullCase = Section(ParseCaseLabel("null"));
+            var nullCase = new Candidate(null, [Section(ParseCaseLabel("null"))]);
             var withNull = await AddCompilingSectionsAsync(document, marker, [nullCase], cancellationToken).ConfigureAwait(false);
             if (!await IsReportedAsync(withNull, marker, cancellationToken).ConfigureAwait(false))
             {
@@ -125,47 +133,90 @@ public sealed class UnionSwitchStatementCodeFixProvider : CodeFixProvider
     }
 
     /// <summary>
-    ///     Adds the sections one by one after the last section that is not a guard (<c>default: throw ...;</c>), so a
-    ///     trailing guard stays last and no new section precedes an existing case. A section is only kept if the
-    ///     document does not get any additional error, wherever the compiler reports it: an already handled case
-    ///     can be reported on the existing label rather than on the new one.
+    ///     Adds the candidates one by one after the last section that is not a guard (<c>default: throw ...;</c>), so a
+    ///     trailing guard stays last and no new section precedes an existing case. For each candidate, the first
+    ///     alternative is taken that (a) adds no error to the member, wherever the compiler reports it (an already
+    ///     handled case can be reported on the existing label), and (b) really is a type pattern for the case type
+    ///     (with a constant named like the type in scope, 'case Square:' would compile as a constant pattern).
     /// </summary>
     private static async Task<Document> AddCompilingSectionsAsync(Document document, SyntaxAnnotation marker,
-        IReadOnlyList<SwitchSectionSyntax> newSections, CancellationToken cancellationToken)
+        IReadOnlyList<Candidate> candidates, CancellationToken cancellationToken)
     {
-        int errors = await CountErrorsAsync(document, cancellationToken).ConfigureAwait(false);
-        foreach (var section in newSections)
+        int errors = await CountErrorsAsync(document, marker, cancellationToken).ConfigureAwait(false);
+        foreach (var candidate in candidates)
         {
-            var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
-            var switchStatement = Find(root!, marker);
-            var sections = switchStatement.Sections;
-            int insertAt = 0;
-            for (int i = sections.Count - 1; i >= 0; i--)
+            foreach (var alternative in candidate.Alternatives)
             {
-                if (!sections[i].Labels.Any(UnionSwitchCoverage.IsThrowOnlyCatchAll))
+                var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+                var switchStatement = Find(root!, marker);
+                var sections = switchStatement.Sections;
+                int insertAt = 0;
+                for (int i = sections.Count - 1; i >= 0; i--)
                 {
-                    insertAt = i + 1;
+                    if (!sections[i].Labels.Any(UnionSwitchCoverage.IsThrowOnlyCatchAll))
+                    {
+                        insertAt = i + 1;
+                        break;
+                    }
+                }
+
+                var thisSection = new SyntaxAnnotation();
+                var attempt = document.WithSyntaxRoot(root!.ReplaceNode(switchStatement,
+                    switchStatement.WithSections(sections.Insert(insertAt, alternative.WithAdditionalAnnotations(thisSection)))));
+                int attemptErrors = await CountErrorsAsync(attempt, marker, cancellationToken).ConfigureAwait(false);
+                if (attemptErrors <= errors &&
+                    await MatchesCaseTypeAsync(attempt, thisSection, candidate.CaseType, cancellationToken).ConfigureAwait(false))
+                {
+                    document = attempt;
+                    errors = attemptErrors;
                     break;
                 }
-            }
-
-            var candidate = document.WithSyntaxRoot(root!.ReplaceNode(switchStatement,
-                switchStatement.WithSections(sections.Insert(insertAt, section))));
-            int candidateErrors = await CountErrorsAsync(candidate, cancellationToken).ConfigureAwait(false);
-            if (candidateErrors <= errors)
-            {
-                document = candidate;
-                errors = candidateErrors;
             }
         }
 
         return document;
     }
 
-    private static async Task<int> CountErrorsAsync(Document document, CancellationToken cancellationToken)
+    private static async Task<bool> MatchesCaseTypeAsync(Document document, SyntaxAnnotation section, ITypeSymbol? caseType,
+        CancellationToken cancellationToken)
     {
+        if (caseType is null)
+        {
+            return true; // 'case null:' cannot mean anything else
+        }
+
+        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
         var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
-        return model!.GetDiagnostics(cancellationToken: cancellationToken).Count(d => d.Severity == DiagnosticSeverity.Error);
+        var label = root!.GetAnnotatedNodes(section).OfType<SwitchSectionSyntax>().Single().Labels[0];
+        var matchedType = model!.GetOperation(label, cancellationToken) switch
+        {
+            IPatternCaseClauseOperation { Pattern: ITypePatternOperation pattern } => pattern.MatchedType,
+            IPatternCaseClauseOperation { Pattern: IDeclarationPatternOperation pattern } => pattern.MatchedType,
+            _ => null
+        };
+        // The attempt is a different compilation: compare the types by name, not by symbol identity.
+        return matchedType is not null &&
+               matchedType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ==
+               caseType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+    }
+
+    private static SymbolDisplayFormat ExpandedTuples(SymbolDisplayFormat format) =>
+        format.AddMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.ExpandValueTuple);
+
+    private static async Task<int> CountErrorsAsync(Document document, SyntaxAnnotation marker, CancellationToken cancellationToken)
+    {
+        // Only the member containing the switch can be affected by a new section.
+        var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
+        var model = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+        var switchStatement = Find(root!, marker);
+        var scope = switchStatement.Ancestors().FirstOrDefault(a => a is MemberDeclarationSyntax) ?? root!;
+        return model!.GetDiagnostics(scope.Span, cancellationToken).Count(d => d.Severity == DiagnosticSeverity.Error);
+    }
+
+    private sealed class Candidate(ITypeSymbol? caseType, IReadOnlyList<SwitchSectionSyntax> alternatives)
+    {
+        public ITypeSymbol? CaseType { get; } = caseType;
+        public IReadOnlyList<SwitchSectionSyntax> Alternatives { get; } = alternatives;
     }
 
     private static async Task<bool> IsReportedAsync(Document document, SyntaxAnnotation marker, CancellationToken cancellationToken)
